@@ -1,0 +1,2 @@
+papi: change libfpm4/config.mk, remove Werror
+
