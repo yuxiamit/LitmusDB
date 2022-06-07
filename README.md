@@ -8,9 +8,11 @@ This implementation is a proof-of-concept preliminary build for performance and 
 
 1. We include the key generation in the critical path while it is unnecessary. This factor results in performance underestimation. We are working on porting the code to rust and replace the verifiable computation implementation with [Plonk](https://eprint.iacr.org/2019/953.pdf), a zkp protocol with universal setup. 
 2. We use a **small** RSA group to avoid the engineering effort of multi-scalar operations in the constraint system. In theory, this should not affect the speedup of the techniques we presented in the paper. For how to extend our implementation to support large groups, [xJsnark](https://github.com/akosba/xjsnark) and [Bellman-Bignat](https://github.com/alex-ozdemir/bellman-bignat) would be helpful. We are working on porting the codebase to rust and integrate it with Bellman-Bignat for large RSA groups (>=2048 bits).
-4. We assume division-intractibility in very large odd integers. This brings two effects: (a) the non-existence proof of key lookups might fail occasionally because the large integers could have common divisors. We commented one constraint at line ??? of file ???. This does not affect the performance much since the prover workload depends on the number of constraints and variables. You may uncomment the constraint back but then you need to remove the assertion *verified==true* at line ??? of file ???. (b) This skips the Pocklington verification. It results in performance overestimation (by a constant factor).
+3. We assume a division-intractibility hash function exists [1]. This brings two effects: (a) the non-existence proof of key lookups might fail occasionally because the large integers could have common divisors. We commented one constraint at line 185 of file `litmus-gadgets.hpp`. This does not affect the performance much since the prover workload depends on the number of constraints and variables. You may uncomment the constraint back but then you need to remove the assertion *verified==true* at line 2377 of file `litmus-prover.cpp`. (b) This skips the Pocklington verification. It results in performance overestimation (by a constant factor).
 
 Please do not hesitate fo submit an issue or contact us directly if you found any bugs.
+
+[1] Ozdemir, Alex, Riad Wahby, Barry Whitehat, and Dan Boneh. "Scaling verifiable computation using efficient set accumulators." In 29th USENIX Security Symposium (USENIX Security 20), pp. 2075-2092. 2020.
 
 ## How to Install
 
