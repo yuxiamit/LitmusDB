@@ -1,10 +1,10 @@
-# LitmusDB Preliminary Build
+# LitmusDB Prototype Build
 
 ## Important: Read Before You Use This Codebase
 
-**You should never ever use it in production as it is a preliminary build. The code is provided as it is with no warranty or support.**
+**You should never ever use it in production as it is a prototype build. The code is provided as it is with no warranty or support.**
 
-This implementation is a proof-of-concept preliminary build for performance and speedup estimating purposes. As discussed in the paper, there are three limitations:
+This implementation is a proof-of-concept prototype build for performance and speedup estimating purposes. As discussed in the paper, there are three limitations:
 
 1. We include the key generation in the critical path while it is unnecessary. This factor results in performance underestimation. We are working on porting the code to rust and replace the verifiable computation implementation with [Plonk](https://eprint.iacr.org/2019/953.pdf), a zkp protocol with universal setup. 
 2. We use a **small** RSA group to avoid the engineering effort of multi-scalar operations in the constraint system. In theory, this should not affect the speedup of the techniques we presented in the paper. For how to extend our implementation to support large groups, [xJsnark](https://github.com/akosba/xjsnark) and [Bellman-Bignat](https://github.com/alex-ozdemir/bellman-bignat) would be helpful. We are working on porting the codebase to rust and integrate it with Bellman-Bignat for large RSA groups (>=2048 bits).
