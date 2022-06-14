@@ -14,6 +14,8 @@ Please do not hesitate fo submit an issue or contact us directly if you found an
 
 [1] Ozdemir, Alex, Riad Wahby, Barry Whitehat, and Dan Boneh. "Scaling verifiable computation using efficient set accumulators." In 29th USENIX Security Symposium (USENIX Security 20), pp. 2075-2092. 2020.
 
+*The `pequin` folder is the Pequin ToolChain project from https://github.com/pepper-project/pequin*
+
 ## How to Install
 
 1. Navigate into pequin/ and follow the instruction in GETTING_STARTED.md and INSTALLING.md. Make sure you can successfully prove the examples shipped with Pequin.
