@@ -1,4 +1,7 @@
+![LitmusDB](https://litmusdb.com/assets/img/litmusdb.png)
+
 # LitmusDB Prototype Build
+[[:globe_with_meridians: Website]](https://litmusdb.com/) [[:memo: Paper]](https://dl.acm.org/doi/10.1145/3514221.3517851) [[:book: Extended Version (Coming Soon)]](https://github.com/yuxiamit/LitmusDB) [[:tv: Video]](https://youtu.be/gMKxLbDYhTU)
 
 ## Important: Read Before You Use This Codebase
 
