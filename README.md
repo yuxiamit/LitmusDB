@@ -21,6 +21,8 @@ Please do not hesitate fo submit an issue or contact us directly if you found an
 
 ## How to Install
 
+*Note: You need to have gcc > 5.5 and glibc < 2.28 to finish the following setup process.* Thanks to Changhao Zhu for pointing this out.
+
 1. Navigate into pequin/ and follow the instruction in GETTING_STARTED.md and INSTALLING.md. Make sure you can successfully prove the examples shipped with Pequin.
 2. Navigate into dbx1000/ and run install_deps.sh
 3. Run `python3 tools/compile.py`
