@@ -297,6 +297,7 @@ extern TestCases					g_test_case;
 #define RSA_AD 0
 #define MERKLE_TREE 1
 #define MEM_INTEGRITY MERKLE_TREE
+#define MERKLE_SKIP_INIT false
 
 /************************************/
 // Elle support

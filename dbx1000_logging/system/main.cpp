@@ -290,7 +290,8 @@ int main(int argc, char* argv[])
     #if MEM_INTEGRITY == RSA_AD
 	proveInteractive();
     #else
-    proveInteractiveMerkleTree();
+    //proveInteractiveMerkleTree();
+	proveInteractiveMerkleTreeNative();
     #endif
 	#else
 	proveHandWritten();

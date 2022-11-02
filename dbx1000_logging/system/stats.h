@@ -146,6 +146,9 @@ enum StatsInt {
 
     STAT_int_batch_num,
 
+	STAT_time_merkle_init,
+	STAT_time_merkle_prove,
+
 	NUM_INT_STATS
 };
 
@@ -342,6 +345,9 @@ public:
 
         "int_comm_cost",
         "int_batch_num",
+		
+		"time_merkle_init",
+		"time_merkle_prove",
 	};
 //private:
 	uint32_t _total_thread_cnt;

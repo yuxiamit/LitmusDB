@@ -875,6 +875,33 @@ def litmusDataSize():
                     workload=workload, log_type='D', log_alg='S', cc_alg='DETRESERVEMP', mem_int='R', Ln=1, Lr=Lr, Gz=81920, Gx=655360 * 4)
     
 
+def litmusDRL(dir_name = 'litmus-drl'):
+    resDirShort = getResDir(dir_name)
+    numTrials = 1 #3
+    gxList = [8192]# [160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960, 81920, 163840, 327680, 655360, 655360 * 2]
+    
+    Lr=0
+    LR=1
+
+    for workload in ['YCSB']:
+            runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120], resDirShort, numTrials,
+                        workload=workload, log_type='D', log_alg='S', mem_int = 'M', cc_alg='INTERACT', Ln=1, Lr=Lr, LR=1)
+            runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960], resDirShort, numTrials,
+                        workload=workload, log_type='D', log_alg='S', mem_int = 'M', cc_alg='INTERACT1ms', Ln=1, Lr=Lr, LR=1)
+            #runExpr('Gx', [8, 64, 128], resDirShort, numTrials,
+            #            workload=workload, log_type='D', log_alg='S', mem_int = 'M', cc_alg='INTERACT1ms', Ln=1, Lr=Lr, LR=1)
+            
+            #runExpr('Gx', [8, 64, 128], resDirShort, numTrials,
+            #               workload=workload, log_type='D', log_alg='S', mem_int = 'M', cc_alg='INTERACT', Ln=1, Lr=Lr)
+
+            # gxList = [160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960, 81920, 163840, 327680, 655360]
+            global paramOverride
+            # paramOverride = ' -Vp75 '
+            runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960, 81920, 163840, 327680, 655360, 655360 * 2, 655360 * 4], resDirShort, numTrials,
+                                workload=workload, log_type='D', log_alg='S', mem_int = 'R', cc_alg='DETRESERVEMP', Ln=1, Lr=Lr, Vp=96, LR=1)
+            # 10000000, ~8000
+            ##########################
+
 def litmus(dir_name = 'litmus-load'):
     resDirShort = getResDir(dir_name)
     numTrials = 1 #3
@@ -887,7 +914,8 @@ def litmus(dir_name = 'litmus-load'):
 
             runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960, 81920], resDirShort, numTrials,
                         workload=workload, log_type='D', log_alg='S', mem_int = 'R', cc_alg='DETRESERVE', Ln=1, Lr=Lr, LR=1)
-            runExpr('Gx', [20, 40, 80, 120, 160, 320, 640, 1280, 2560], resDirShort, numTrials,
+            #runExpr('Gx', [20, 40, 80, 120, 160, 320, 640, 1280, 2560], resDirShort, numTrials,
+            runExpr('Gx', [20, 40, 80, 120, 160, 320], resDirShort, numTrials, # due to too large keys
                         workload=workload, log_type='D', log_alg='S', mem_int = 'R', cc_alg='NOWAIT', Ln=1, Lr=Lr, LR=1)
             runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120], resDirShort, numTrials,
                         workload=workload, log_type='D', log_alg='S', mem_int = 'R', cc_alg='INTERACT', Ln=1, Lr=Lr, LR=1)
@@ -895,7 +923,7 @@ def litmus(dir_name = 'litmus-load'):
                         workload=workload, log_type='D', log_alg='S', mem_int = 'R', cc_alg='INTERACT1ms', Ln=1, Lr=Lr, LR=1)
 
             
-            runExpr('Gx', [8, 64, 128], resDirShort, numTrials,
+            runExpr('Gx', [20, 80, 160, 320, 640, 1280, 2560, 5120, 10240, 20480, 40960], resDirShort, numTrials,
                         workload=workload, log_type='D', log_alg='S', mem_int = 'M', cc_alg='INTERACT1ms', Ln=1, Lr=Lr, LR=1)
             
             #runExpr('Gx', [8, 64, 128], resDirShort, numTrials,

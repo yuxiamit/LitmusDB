@@ -16,7 +16,7 @@
 // # of transactions to run for warmup
 #define WARMUP						0
 // YCSB or TPCC
-#define WORKLOAD TPCC
+#define WORKLOAD YCSB
 // print the transaction latency distribution
 #define PRT_LAT_DISTR				false
 #define STATS_ENABLE				true
@@ -286,7 +286,7 @@ extern TestCases					g_test_case;
 // LITMUS
 /************************************/
 
-#define VERIFICATION false
+#define VERIFICATION true
 #define SKIP_MAT_GEN false
 #define OUTPUT_SOURCE true
 #define OUTPUT_CIRCUIT true
@@ -297,6 +297,7 @@ extern TestCases					g_test_case;
 #define RSA_AD 0
 #define MERKLE_TREE 1
 #define MEM_INTEGRITY RSA_AD
+#define MERKLE_SKIP_INIT false
 
 /************************************/
 // Elle support

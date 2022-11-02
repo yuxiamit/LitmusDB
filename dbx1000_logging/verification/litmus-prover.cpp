@@ -3,7 +3,6 @@
 #include "config.h"
 #include "tpcc_const.h"
 
-
 #include "txn.h"
 #include "global.h"
 #include <stdio.h>
@@ -29,7 +28,13 @@
 #include <map>
 #include <cstdlib>
 
+#include "SHA256.h"
+
 LoggingThread *logth;
+
+#if VERIFICATION
+uint64_t multi_scalar_coeff[2 * MS_LIMBS][2 * MS_LIMBS]; // c^i, c = [1 .. 2M - 1], i = [0 .. 2M - 1]
+#endif
 
 void *f_vec(void *id)
 {
@@ -40,7 +45,7 @@ void *f_vec(void *id)
 void outputElle() // output Elle format
 {
     /*
-        Sample: 
+        Sample:
 (def h [{:type :ok, :value [[:append :x 1] [:r :y [1]]]}
            {:type :ok, :value [[:append :x 2] [:append :y 1]]}
            {:type :ok, :value [[:r :x [1 2]]]}])
@@ -86,8 +91,8 @@ void outputElle() // output Elle format
             }
             else
             {
-                PAUSE //usleep(50);
-                INC_INT_STATS(time_io, get_sys_clock() - tt);
+                PAUSE // usleep(50);
+                    INC_INT_STATS(time_io, get_sys_clock() - tt);
                 continue;
             }
         }
@@ -97,13 +102,13 @@ void outputElle() // output Elle format
         // | checksum | size | ... |
         assert(*(uint32_t *)entry == 0xbeef || entry[0] == 0x7f);
         char *log_entry = entry + sizeof(uint32_t) * 2;
-        //recover_txn(entry + sizeof(uint32_t) * 2);
+        // recover_txn(entry + sizeof(uint32_t) * 2);
         uint32_t offset = 0;
 
         uint32_t num_keys;
 
         UNPACK(log_entry, num_keys, offset);
-        //cout << "numkeys " << num_keys << endl;
+        // cout << "numkeys " << num_keys << endl;
 
         uint32_t wi = 0;
         uint32_t ri = 0;
@@ -135,35 +140,38 @@ void outputElle() // output Elle format
 #if WORKLOAD == YCSB
             ((ycsb_wl *)glob_manager->get_workload())->the_index->index_read(key, m_item, 0, GET_THD_ID);
 #elif WORKLOAD == TPCC
-            tpcc_wl * wl = (tpcc_wl *)glob_manager->get_workload();
+            tpcc_wl *wl = (tpcc_wl *)glob_manager->get_workload();
             wl->tpcc_tables[(TableName)table_id]->get_primary_index()->index_read(
                 key,
-                m_item, 
-                0, 
-                GET_THD_ID
-            );
+                m_item,
+                0,
+                GET_THD_ID);
             key = key * NUM_TABLES + table_id; // get unique keys
 #else
             assert(0);
 #endif
-            if (append_list.find(key) == append_list.end()) {
+            if (append_list.find(key) == append_list.end())
+            {
                 append_list[key] = vector<uint32_t>();
             }
 
-            if (accessType == RD) {
+            if (accessType == RD)
+            {
                 fout << "[:r :x" << key << " [";
-                for(int v: append_list[key]) {
+                for (int v : append_list[key])
+                {
                     fout << v << " ";
                 }
                 fout << "]] ";
-            } else {
+            }
+            else
+            {
                 // append
                 fout << "[:append :x" << key << " ";
                 fout << val;
                 fout << "]";
                 append_list[key].push_back(val);
             }
-
         }
         fout << "]}" << endl;
 
@@ -176,9 +184,7 @@ void outputElle() // output Elle format
     pthread_join(p_log, NULL);
 }
 
-
 #if VERIFICATION
-
 
 #include <libsnark/relations/constraint_satisfaction_problems/r1cs/r1cs.hpp>
 #include <libsnark/common/default_types/r1cs_gg_ppzksnark_pp.hpp>
@@ -204,37 +210,61 @@ void outputElle() // output Elle format
 #include "merkle_tree_circuit.h"
 #include <libsnark/gadgetlib1/gadgets/merkle_tree/merkle_tree_check_update_gadget.hpp>
 
+// common gmp values
 mpz_t mp_N;
+mpz_t mp_POE_L;
+mpz_t mp_POE_q;
+mpz_t mp_POE_Q;
+mpz_t mp_MSMOD;
 mpz_t mp_G;
 mpz_t mp_BN128_ORDER;
 
 #if MEM_INTEGRITY == MERKLE_TREE
 
-std::string hexToChar(const char c) {
-    switch(tolower(c))
+std::string hexToChar(const char c)
+{
+    switch (tolower(c))
     {
-        case '0': return "0000";
-        case '1': return "0001";
-        case '2': return "0010";
-        case '3': return "0011";
-        case '4': return "0100";
-        case '5': return "0101";
-        case '6': return "0110";
-        case '7': return "0111";
-        case '8': return "1000";
-        case '9': return "1001";
-        case 'a': return "1010";
-        case 'b': return "1011";
-        case 'c': return "1100";
-        case 'd': return "1101";
-        case 'e': return "1110";
-        case 'f': return "1111";
+    case '0':
+        return "0000";
+    case '1':
+        return "0001";
+    case '2':
+        return "0010";
+    case '3':
+        return "0011";
+    case '4':
+        return "0100";
+    case '5':
+        return "0101";
+    case '6':
+        return "0110";
+    case '7':
+        return "0111";
+    case '8':
+        return "1000";
+    case '9':
+        return "1001";
+    case 'a':
+        return "1010";
+    case 'b':
+        return "1011";
+    case 'c':
+        return "1100";
+    case 'd':
+        return "1101";
+    case 'e':
+        return "1110";
+    case 'f':
+        return "1111";
     }
 }
 
-libff::bit_vector hexToBin(std::string& str) {
+libff::bit_vector hexToBin(std::string &str)
+{
     libff::bit_vector res;
-    for (auto item : str) {
+    for (auto item : str)
+    {
         std::string hexItem = hexToChar(item);
         res.push_back(hexItem[0] == '1' ? true : false);
         res.push_back(hexItem[1] == '1' ? true : false);
@@ -244,24 +274,27 @@ libff::bit_vector hexToBin(std::string& str) {
     return res;
 }
 
-template<typename HashT>
-libff::bit_vector hash256(std::string str) {
+template <typename HashT>
+libff::bit_vector hash256(std::string str)
+{
     libff::bit_vector operand;
-    for (int i = 0; i < str.size(); i++) {
+    for (int i = 0; i < str.size(); i++)
+    {
         char tmpc[5];
         sprintf(tmpc, "%x", str[i]);
         std::string tmps(tmpc);
         libff::bit_vector s = hexToBin(tmps);
         operand.insert(operand.end(), s.begin(), s.end());
     }
-    //padding input
+    // padding input
     size_t size = operand.size();
     char tmpc[20];
     sprintf(tmpc, "%x", size);
     std::string tmps(tmpc);
     libff::bit_vector s = hexToBin(tmps);
     operand.push_back(1);
-    for (int i = size + 1; i < HashT::get_block_len() - s.size(); i++) {
+    for (int i = size + 1; i < HashT::get_block_len() - s.size(); i++)
+    {
         operand.push_back(0);
     }
     operand.insert(operand.end(), s.begin(), s.end());
@@ -269,21 +302,24 @@ libff::bit_vector hash256(std::string str) {
     return res;
 }
 
-template<typename HashT>
-void calcAllLevels(std::vector<std::vector<libff::bit_vector>>& levels, size_t level) {
-    //level 1 upper layer
-    for (int i = level; i > 0; i--) {
-        for (int j = 0; j < levels[i].size(); j += 2) {
+template <typename HashT>
+void calcAllLevels(std::vector<std::vector<libff::bit_vector>> &levels, size_t level)
+{
+    // level 1 upper layer
+    for (int i = level; i > 0; i--)
+    {
+        for (int j = 0; j < levels[i].size(); j += 2)
+        {
             libff::bit_vector input = levels[i][j];
-            input.insert(input.end(), levels[i][j+1].begin(), levels[i][j+1].end());
-            levels[i-1].push_back(HashT::get_hash(input));
+            input.insert(input.end(), levels[i][j + 1].begin(), levels[i][j + 1].end());
+            levels[i - 1].push_back(HashT::get_hash(input));
         }
     }
 }
 
 #endif
 
-//using namespace NTL;
+// using namespace NTL;
 
 std::chrono::milliseconds timespan(SIM_NET_LATENCY);
 
@@ -296,13 +332,11 @@ vector<uint32_t> *inputList;
 const char *cHeader = "#include <stdint.h>\n#include <gmp.h>";
 const char *cFunc = "void compute(struct In* input, struct Out* output){\nuint64_t localDigest=1;";
 
-
 vector<pthread_t> verifyWorkers;
 
-//EX_TYPE * HashPrimes;
+// EX_TYPE * HashPrimes;
 
-char* cCode;
-
+char *cCode;
 
 FieldT convertToField(mpz_class x)
 {
@@ -311,7 +345,6 @@ FieldT convertToField(mpz_class x)
     mpz_mod(xmpzt, x.get_mpz_t(), mp_BN128_ORDER);
     return FieldT(xmpzt);
 }
-
 
 void xgcd(uint32_t a, uint32_t b, uint32_t &res_x, uint32_t &res_y)
 {
@@ -380,7 +413,7 @@ uint32_t ipow(uint32_t base, uint32_t exp)
     return result;
 }
 
-template<class T>
+template <class T>
 T ipow_fp(T base, T exp)
 {
     T result = 1;
@@ -389,7 +422,7 @@ T ipow_fp(T base, T exp)
         if (exp & 1)
             result = result * base % __LTM_N;
         exp = exp >> 1;
-        if (exp==0)
+        if (exp == 0)
             break;
         base = base * base % __LTM_N;
     }
@@ -398,7 +431,7 @@ T ipow_fp(T base, T exp)
 
 void parseTraces()
 {
-    assert(false); //deprecated
+    assert(false); // deprecated
 
 #if false    
     assert(LOG_ALGORITHM == LOG_SERIAL);
@@ -732,12 +765,12 @@ void javabridge()
     // java is not used any more in this project.
 }
 
-
 void run_setup(int num_constraints, int num_inputs,
                int num_outputs, int num_vars, mpz_t p,
                string vkey_file, string pkey_file,
-               string unprocessed_vkey_file, string AmatStr, string BmatStr, string CmatStr, std::stringstream &vkey, std::stringstream &pkey) {
-    
+               string unprocessed_vkey_file, string AmatStr, string BmatStr, string CmatStr, std::stringstream &vkey, std::stringstream &pkey)
+{
+
     cout << "Matrix sizes " << AmatStr.size() << " " << BmatStr.size() << " " << CmatStr.size() << endl;
 
     std::stringstream Amat(AmatStr);
@@ -748,7 +781,7 @@ void run_setup(int num_constraints, int num_inputs,
     libsnark::r1cs_constraint_system<FieldT> q;
 
     int Ai, Aj, Bi, Bj, Ci, Cj;
-    mpz_t  Acoef, Bcoef, Ccoef;
+    mpz_t Acoef, Bcoef, Ccoef;
     mpz_init(Acoef);
     mpz_init(Bcoef);
     mpz_init(Ccoef);
@@ -757,11 +790,13 @@ void run_setup(int num_constraints, int num_inputs,
     Amat >> Aj;
     Amat >> Acoef;
 
-    if (mpz_cmpabs(Acoef, p) > 0) {
-        //gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Acoef, p);
+    if (mpz_cmpabs(Acoef, p) > 0)
+    {
+        // gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Acoef, p);
         mpz_mod(Acoef, Acoef, p);
     }
-    if (mpz_sgn(Acoef) == -1) {
+    if (mpz_sgn(Acoef) == -1)
+    {
         mpz_add(Acoef, p, Acoef);
     }
 
@@ -770,11 +805,13 @@ void run_setup(int num_constraints, int num_inputs,
     Bmat >> Bi;
     Bmat >> Bj;
     Bmat >> Bcoef;
-    if (mpz_cmpabs(Bcoef, p) > 0) {
-        //gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Bcoef, p);
+    if (mpz_cmpabs(Bcoef, p) > 0)
+    {
+        // gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Bcoef, p);
         mpz_mod(Bcoef, Bcoef, p);
     }
-    if (mpz_sgn(Bcoef) == -1) {
+    if (mpz_sgn(Bcoef) == -1)
+    {
         mpz_add(Bcoef, p, Bcoef);
     }
 
@@ -782,13 +819,17 @@ void run_setup(int num_constraints, int num_inputs,
     Cmat >> Cj;
     Cmat >> Ccoef;
 
-    if (mpz_cmpabs(Ccoef, p) > 0) {
-        //gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Ccoef, p);
+    if (mpz_cmpabs(Ccoef, p) > 0)
+    {
+        // gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Ccoef, p);
         mpz_mod(Ccoef, Ccoef, p);
     }
-    if (mpz_sgn(Ccoef) == -1) {
+    if (mpz_sgn(Ccoef) == -1)
+    {
         mpz_mul_si(Ccoef, Ccoef, -1);
-    } else if(mpz_sgn(Ccoef) == 1) {
+    }
+    else if (mpz_sgn(Ccoef) == 1)
+    {
         mpz_mul_si(Ccoef, Ccoef, -1);
         mpz_add(Ccoef, p, Ccoef);
     }
@@ -799,82 +840,106 @@ void run_setup(int num_constraints, int num_inputs,
     q.primary_input_size = num_inputs_outputs;
     q.auxiliary_input_size = num_intermediate_vars;
 
-    for (int currentconstraint = 1; currentconstraint <= num_constraints; currentconstraint++) {
+    for (int currentconstraint = 1; currentconstraint <= num_constraints; currentconstraint++)
+    {
         libsnark::linear_combination<FieldT> A, B, C;
 
-        while(Aj == currentconstraint && Amat) {
-            if (Ai <= num_intermediate_vars && Ai != 0) {
+        while (Aj == currentconstraint && Amat)
+        {
+            if (Ai <= num_intermediate_vars && Ai != 0)
+            {
                 Ai += num_inputs_outputs;
-            } else if (Ai > num_intermediate_vars) {
+            }
+            else if (Ai > num_intermediate_vars)
+            {
                 Ai -= num_intermediate_vars;
             }
 
             FieldT AcoefT(Acoef);
             A.add_term(Ai, AcoefT);
-            if(!Amat) {
+            if (!Amat)
+            {
                 break;
             }
             Amat >> Ai;
             Amat >> Aj;
             Amat >> Acoef;
-            if (mpz_cmpabs(Acoef, p) > 0) {
+            if (mpz_cmpabs(Acoef, p) > 0)
+            {
                 gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Acoef, p);
                 mpz_mod(Acoef, Acoef, p);
             }
-            if (mpz_sgn(Acoef) == -1) {
+            if (mpz_sgn(Acoef) == -1)
+            {
                 mpz_add(Acoef, p, Acoef);
             }
         }
 
-        while(Bj == currentconstraint && Bmat) {
-            if (Bi <= num_intermediate_vars && Bi != 0) {
+        while (Bj == currentconstraint && Bmat)
+        {
+            if (Bi <= num_intermediate_vars && Bi != 0)
+            {
                 Bi += num_inputs_outputs;
-            } else if (Bi > num_intermediate_vars) {
+            }
+            else if (Bi > num_intermediate_vars)
+            {
                 Bi -= num_intermediate_vars;
             }
             //         std::cout << Bi << " " << Bj << " " << Bcoef << std::std::endl;
             FieldT BcoefT(Bcoef);
             B.add_term(Bi, BcoefT);
-            if (!Bmat) {
+            if (!Bmat)
+            {
                 break;
             }
             Bmat >> Bi;
             Bmat >> Bj;
             Bmat >> Bcoef;
-            if (mpz_cmpabs(Bcoef, p) > 0) {
+            if (mpz_cmpabs(Bcoef, p) > 0)
+            {
                 gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Bcoef, p);
                 mpz_mod(Bcoef, Bcoef, p);
             }
-            if (mpz_sgn(Bcoef) == -1) {
+            if (mpz_sgn(Bcoef) == -1)
+            {
                 mpz_add(Bcoef, p, Bcoef);
             }
         }
 
-        while(Cj == currentconstraint && Cmat) {
-            if (Ci <= num_intermediate_vars && Ci != 0) {
+        while (Cj == currentconstraint && Cmat)
+        {
+            if (Ci <= num_intermediate_vars && Ci != 0)
+            {
                 Ci += num_inputs_outputs;
-            } else if (Ci > num_intermediate_vars) {
+            }
+            else if (Ci > num_intermediate_vars)
+            {
                 Ci -= num_intermediate_vars;
             }
-            //Libsnark constraints are A*B = C, vs. A*B - C = 0 for Zaatar.
-            //Which is why the C coefficient is negated.
+            // Libsnark constraints are A*B = C, vs. A*B - C = 0 for Zaatar.
+            // Which is why the C coefficient is negated.
 
             // std::cout << Ci << " " << Cj << " " << Ccoef << std::std::endl;
             FieldT CcoefT(Ccoef);
             C.add_term(Ci, CcoefT);
-            if (!Cmat) {
+            if (!Cmat)
+            {
                 break;
             }
             Cmat >> Ci;
             Cmat >> Cj;
             Cmat >> Ccoef;
-            if (mpz_cmpabs(Ccoef, p) > 0) {
+            if (mpz_cmpabs(Ccoef, p) > 0)
+            {
                 gmp_printf("WARNING: Coefficient larger than prime (%Zd > %Zd).\n", Ccoef, p);
                 mpz_mod(Ccoef, Ccoef, p);
             }
-            if (mpz_sgn(Ccoef) == -1) {
+            if (mpz_sgn(Ccoef) == -1)
+            {
                 mpz_mul_si(Ccoef, Ccoef, -1);
-            } else if (mpz_sgn(Ccoef) == 1) {
+            }
+            else if (mpz_sgn(Ccoef) == 1)
+            {
                 mpz_mul_si(Ccoef, Ccoef, -1);
                 mpz_add(Ccoef, p, Ccoef);
             }
@@ -882,7 +947,7 @@ void run_setup(int num_constraints, int num_inputs,
 
         q.add_constraint(libsnark::r1cs_constraint<FieldT>(A, B, C));
 
-        //dump_constraint(r1cs_constraint<FieldT>(A, B, C), va, variable_annotations);
+        // dump_constraint(r1cs_constraint<FieldT>(A, B, C), va, variable_annotations);
     }
 
     libff::start_profiling();
@@ -892,21 +957,26 @@ void run_setup(int num_constraints, int num_inputs,
     vkey << pvk;
     pkey << keypair.pk;
 
-    if (unprocessed_vkey_file.length() > 0) {
+    if (unprocessed_vkey_file.length() > 0)
+    {
         std::ofstream unprocessed_vkey(unprocessed_vkey_file);
         unprocessed_vkey << keypair.vk;
         unprocessed_vkey.close();
     }
 }
 
-template<typename HashT>
-void fakeCalcAllLevels(std::vector<std::vector<libff::bit_vector>>& levels, size_t level, size_t digest_len) {
-    //level 1 upper layer
-    for (int i = level; i > 0; i--) {
-        for (int j = 0; j < levels[i].size(); j += 2) {
+template <typename HashT>
+void fakeCalcAllLevels(std::vector<std::vector<libff::bit_vector>> &levels, size_t level, size_t digest_len)
+{
+    // level 1 upper layer
+    for (int i = level; i > 0; i--)
+    {
+        for (int j = 0; j < levels[i].size(); j += 2)
+        {
             libff::bit_vector other(digest_len);
-            std::generate(other.begin(), other.end(), [&]() { return std::rand() % 2; });
-            levels[i-1].push_back(other);
+            std::generate(other.begin(), other.end(), [&]()
+                          { return std::rand() % 2; });
+            levels[i - 1].push_back(other);
         }
     }
 }
@@ -914,31 +984,47 @@ void fakeCalcAllLevels(std::vector<std::vector<libff::bit_vector>>& levels, size
 void proveInteractiveMerkleTree()
 {
 #if MEM_INTEGRITY == MERKLE_TREE
+
+    uint64_t time_start = get_sys_clock();
+
     typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
-    //assert(g_synth_table_size == 1024 * 1024 * 10);
+    // assert(g_synth_table_size == 1024 * 1024 * 10);
     g_synth_table_size = 1024;
-    size_t tree_depth = 10; //24;
+    size_t tree_depth = 10; // 24;
     const size_t digest_len = HashT::get_digest_len();
 
+#if !MERKLE_SKIP_INIT
     std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
 
     libff::bit_vector leaf, root, address_bits(tree_depth);
     int leaf_count = std::pow(2, tree_depth);
 
-
     libff::bit_vector zero_cached = hash256<HashT>("0");
-    for (int i = 0; i < leaf_count; i++) {
-            libff::bit_vector tmp = zero_cached;
-            //std::cout << *binToHex<HashT>(tmp) << std::endl;
-            levels[tree_depth - 1].push_back(tmp);
+
+    for (int i = 0; i < leaf_count; i++)
+    {
+        libff::bit_vector tmp = zero_cached;
+        // std::cout << *binToHex<HashT>(tmp) << std::endl;
+        levels[tree_depth - 1].push_back(tmp);
     }
-    fakeCalcAllLevels<HashT>(levels, tree_depth-1, digest_len); // to save time
-    //calcAllLevels<HashT>(levels, tree_depth-1);
+
+    fakeCalcAllLevels<HashT>(levels, tree_depth - 1, digest_len); // to save time
+#else
+    int leaf_count = std::pow(2, tree_depth);
+    libff::bit_vector zero_cached = hash256<HashT>("0");
+    std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
+    levels[tree_depth - 1].reserve(leaf_count);
+    libff::bit_vector leaf, root, address_bits(tree_depth);
+#endif
+    // calcAllLevels<HashT>(levels, tree_depth-1);
     libff::bit_vector input = levels[0][0];
-    
+
+    uint64_t init_time = get_sys_clock();
+    INC_INT_STATS(time_merkle_init, init_time - time_start);
+
     root = input;
-    //input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
-    //root = HashT::get_hash(input);
+    // input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
+    // root = HashT::get_hash(input);
 
     log_manager->_logger[0]->flushRestNClose();
     uint64_t numEntries = 0;
@@ -978,8 +1064,8 @@ void proveInteractiveMerkleTree()
             }
             else
             {
-                PAUSE //usleep(50);
-                INC_INT_STATS(time_io, get_sys_clock() - tt);
+                PAUSE // usleep(50);
+                    INC_INT_STATS(time_io, get_sys_clock() - tt);
                 continue;
             }
         }
@@ -989,13 +1075,13 @@ void proveInteractiveMerkleTree()
         // | checksum | size | ... |
         assert(*(uint32_t *)entry == 0xbeef || entry[0] == 0x7f);
         char *log_entry = entry + sizeof(uint32_t) * 2;
-        //recover_txn(entry + sizeof(uint32_t) * 2);
+        // recover_txn(entry + sizeof(uint32_t) * 2);
         uint32_t offset = 0;
 
         uint32_t num_keys;
 
         UNPACK(log_entry, num_keys, offset);
-        //cout << "numkeys " << num_keys << endl;
+        // cout << "numkeys " << num_keys << endl;
 
         uint32_t wi = 0;
         uint32_t ri = 0;
@@ -1024,13 +1110,12 @@ void proveInteractiveMerkleTree()
 #if WORKLOAD == YCSB
             ((ycsb_wl *)glob_manager->get_workload())->the_index->index_read(key, m_item, 0, GET_THD_ID);
 #elif WORKLOAD == TPCC
-            tpcc_wl * wl = (tpcc_wl *)glob_manager->get_workload();
+            tpcc_wl *wl = (tpcc_wl *)glob_manager->get_workload();
             wl->tpcc_tables[(TableName)table_id]->get_primary_index()->index_read(
                 key,
-                m_item, 
-                0, 
-                GET_THD_ID
-            );
+                m_item,
+                0,
+                GET_THD_ID);
             key = key * NUM_TABLES + table_id; // get unique keys
 #else
             assert(0);
@@ -1047,19 +1132,21 @@ void proveInteractiveMerkleTree()
                 uint32_t addr = v_addr;
                 libff::bit_vector leaf, address_bits(tree_depth);
 
-                leaf = levels[tree_depth-1][addr];
+                leaf = levels[tree_depth - 1][addr];
 
-                for (int i = 0; i < tree_depth; i++) {
+                for (int i = 0; i < tree_depth; i++)
+                {
                     uint32_t tmp = (addr & 0x01);
                     address_bits[i] = tmp;
                     addr = addr / 2;
                     // std::cout << address_bits[tree_depth-1-i] << std::endl;
                 }
 
-                //Fill in the path
+                // Fill in the path
                 size_t index = v_addr;
-                for (int i = tree_depth - 1; i >= 0; i--) {
-                    libff::bit_vector path_tmp = (address_bits[tree_depth-1-i] == 0 ? levels[i][index+1] : levels[i][index-1]);
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    libff::bit_vector path_tmp = (address_bits[tree_depth - 1 - i] == 0 ? levels[i][index + 1] : levels[i][index - 1]);
                     index = index / 2;
                 }
 
@@ -1071,10 +1158,10 @@ void proveInteractiveMerkleTree()
             }
             else // accessType == WR
             {
-                // update the merkle tree           
+                // update the merkle tree
 
                 std::vector<merkle_authentication_node> prev_path(tree_depth);
-                libff::bit_vector prev_load_hash = levels[tree_depth-1][v_addr];
+                libff::bit_vector prev_load_hash = levels[tree_depth - 1][v_addr];
                 libff::bit_vector prev_store_hash = hash256<HashT>(to_string(lwMap[v_addr] * 2));
 
                 libff::bit_vector loaded_leaf = prev_load_hash;
@@ -1083,7 +1170,8 @@ void proveInteractiveMerkleTree()
                 libff::bit_vector address_bits(tree_depth);
 
                 uint32_t addr = v_addr;
-                for (int i = 0; i < tree_depth; i++) {
+                for (int i = 0; i < tree_depth; i++)
+                {
                     uint32_t tmp = (addr & 0x01);
                     address_bits[i] = tmp;
                     addr = addr / 2;
@@ -1092,9 +1180,10 @@ void proveInteractiveMerkleTree()
 
                 uint32_t index = v_addr;
 
-                for (int i = tree_depth - 1; i >= 0; i--) {
-                    bool computed_is_right = address_bits[tree_depth-1-i] == 0;
-                    libff::bit_vector other = computed_is_right ? levels[i][index+1] : levels[i][index-1];
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    bool computed_is_right = address_bits[tree_depth - 1 - i] == 0;
+                    libff::bit_vector other = computed_is_right ? levels[i][index + 1] : levels[i][index - 1];
 
                     prev_path[i] = other;
 
@@ -1123,35 +1212,405 @@ void proveInteractiveMerkleTree()
 
                 // ship prev_path, load_root, store_root, loaded_leaf, stored_leaf
             }
-
         }
 
         std::this_thread::sleep_for(timespan); // simulate the latency of communication between server and client
-        //usleep(SIM_NET_LATENCY);
+        // usleep(SIM_NET_LATENCY);
         uint64_t t_verify = get_sys_clock();
         INC_INT_STATS(time_latency_verify, t_verify - tt2);
         INC_INT_STATS(int_latency_num, 1);
     }
-    
+
+    uint64_t end_time = get_sys_clock();
+    INC_INT_STATS(time_merkle_prove, end_time - init_time);
     pthread_join(p_log, NULL);
 #endif
 }
 
-
-void proveInteractive()
+void proveInteractiveMerkleTreeNative() // without using libsnark gadget
 {
+#if MEM_INTEGRITY == MERKLE_TREE
 
-    //assert(false);
-//#if false
-    assert(MEM_INTEGRITY == RSA_AD && CC_ALG == NO_WAIT);
+    uint64_t time_start = get_sys_clock();
+    // g_synth_table_size = 1024;
+    size_t tree_depth = 24; // for the default 10485760 memory slots
 
+    uint32_t digest_len = 256;
+
+    std::vector<std::vector<uint8_t *>> levels(tree_depth);
+
+    uint8_t leaf[32], address_bits[tree_depth];
+    uint8_t *root;
+
+    int leaf_count = std::pow(2, tree_depth);
+
+    MYSHA256 sha;
+    sha.update("0");
+
+    uint8_t *zero_cached = sha.digest();
+
+    uint8_t *pool = new uint8_t[2 * leaf_count * 32];
+    uint32_t offset = 0;
+
+    for (int i = 0; i < leaf_count; i++)
+    {
+        uint8_t *tmp = pool + offset;
+        offset += 32;
+        memcpy(tmp, zero_cached, 32);
+        // std::cout << *binToHex<HashT>(tmp) << std::endl;
+        levels[tree_depth - 1].push_back(tmp);
+    }
+
+    delete[] zero_cached;
+
+#if !MERKLE_SKIP_INIT
+    sha.clear();
+
+    for (int i = tree_depth - 1; i > 0; i--)
+    {
+        for (int j = 0; j < levels[i].size(); j += 2)
+        {
+            uint8_t *tmp = pool + offset;
+            offset += 32;
+            sha.clear();
+            sha.update(levels[i][j], 64); // 32 * 2
+            uint8_t *digest = sha.digest();
+            memcpy(tmp, digest, 32);
+            levels[i - 1].push_back(tmp);
+            delete[] digest;
+        }
+    }
+
+    cout << "Finished initialization" << endl;
+#else
+    for (int i = tree_depth - 1; i > 0; i--)
+    {
+        for (int j = 0; j < levels[i].size(); j += 2)
+        {
+            uint8_t *tmp = pool + offset;
+            offset += 32;
+            // leave as it is
+            levels[i - 1].push_back(tmp);
+        }
+    }
+
+    cout << "Skipped initialization" << endl;
+#endif
+    // calcAllLevels<HashT>(levels, tree_depth-1);
+    uint8_t *input = levels[0][0];
+
+    uint64_t init_time = get_sys_clock();
+    INC_INT_STATS(time_merkle_init, init_time - time_start);
+
+    root = input;
+    // input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
+    // root = HashT::get_hash(input);
+
+    log_manager->_logger[0]->flushRestNClose();
+    uint64_t numEntries = 0;
+    for (uint32_t tid = 0; tid < g_thread_cnt; tid++)
+    {
+        numEntries += stats->_stats[tid]->_int_stats[STAT_num_log_entries];
+    }
+
+    g_log_recover = true;
+    log_manager->init(); // re-open the files and prepare to read
+    pthread_t p_log;
+    logth = (LoggingThread *)_mm_malloc(sizeof(LoggingThread), ALIGN_SIZE);
+    new (logth) LoggingThread();
+    logth->set_thd_id(0);
+    glob_manager->_workload->sim_done = 0;
+    pthread_barrier_init(&log_bar, NULL, g_num_logger);
+    pthread_create(&p_log, NULL, f_vec, NULL);
+    glob_manager->set_thd_id(0); // this is the new thread 0.
+    char default_entry[g_max_log_entry_size];
+    uint32_t count = 0;
+
+    map<uint32_t, uint32_t> lwMap;
+
+    while (true)
+    {
+        char *entry = default_entry;
+        uint64_t tt = get_sys_clock();
+        uint64_t lsn = log_manager->_logger[0]->get_next_log_entry_non_atom(entry, true);
+        if (entry == NULL)
+        {
+            if (log_manager->_logger[0]->iseof())
+            {
+                entry = default_entry;
+                lsn = log_manager->_logger[0]->get_next_log_entry_non_atom(entry, true);
+                if (entry == NULL)
+                    break;
+            }
+            else
+            {
+                PAUSE // usleep(50);
+                    INC_INT_STATS(time_io, get_sys_clock() - tt);
+                continue;
+            }
+        }
+        uint64_t tt2 = get_sys_clock();
+        INC_INT_STATS(time_io, tt2 - tt);
+        // Format for serial logging
+        // | checksum | size | ... |
+        assert(*(uint32_t *)entry == 0xbeef || entry[0] == 0x7f);
+        char *log_entry = entry + sizeof(uint32_t) * 2;
+        // recover_txn(entry + sizeof(uint32_t) * 2);
+        uint32_t offset = 0;
+
+        uint32_t num_keys;
+
+        UNPACK(log_entry, num_keys, offset);
+        // cout << "numkeys " << num_keys << endl;
+
+        uint32_t wi = 0;
+        uint32_t ri = 0;
+
+        g_verification_txn_count++;
+
+        for (uint32_t i = 0; i < num_keys; i++)
+        {
+
+            uint32_t table_id;
+            uint64_t key;
+            access_t accessType;
+            uint32_t data_length;
+            char *data;
+
+            UNPACK(log_entry, table_id, offset);
+            UNPACK(log_entry, key, offset);
+            UNPACK(log_entry, accessType, offset);
+            UNPACK(log_entry, data_length, offset);
+            data = log_entry + offset;
+            offset += data_length;
+            uint32_t val = atoi(data);
+
+            itemid_t *m_item;
+
+#if WORKLOAD == YCSB
+            ((ycsb_wl *)glob_manager->get_workload())->the_index->index_read(key, m_item, 0, GET_THD_ID);
+#elif WORKLOAD == TPCC
+            tpcc_wl *wl = (tpcc_wl *)glob_manager->get_workload();
+            wl->tpcc_tables[(TableName)table_id]->get_primary_index()->index_read(
+                key,
+                m_item,
+                0,
+                GET_THD_ID);
+            key = key * NUM_TABLES + table_id; // get unique keys
+#else
+            assert(0);
+#endif
+
+            uint32_t v_addr = table_id * g_synth_table_size + key;
+
+            v_addr = v_addr % g_synth_table_size; // Hack, assuming table_id==0
+
+            if (accessType == RD)
+            {
+                // generate proof
+                uint8_t path[tree_depth][32];
+
+                uint32_t addr = v_addr;
+
+                // leaf = levels[tree_depth - 1][addr];
+
+                for (int i = 0; i < tree_depth; i++)
+                {
+                    uint32_t tmp = (addr & 0x01);
+                    address_bits[i] = tmp;
+                    addr = addr / 2;
+                    // std::cout << address_bits[tree_depth-1-i] << std::endl;
+                }
+
+                // Fill in the path
+                size_t index = v_addr;
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    uint8_t *path_tmp = (address_bits[tree_depth - 1 - i] == 0 ? levels[i][index + 1] : levels[i][index - 1]);
+                    memcpy(path[i], path_tmp, 32);
+                    index = index / 2;
+                }
+
+                // ship path
+
+                INC_INT_STATS(int_comm_cost, tree_depth * digest_len / 8);
+
+                // verification
+                uint8_t currentNode[32], merged[64];
+                index = v_addr;
+                memcpy(currentNode, levels[tree_depth - 1][v_addr], 32);
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    sha.clear();
+                    if (address_bits[tree_depth - 1 - i] == 0)
+                    {
+                        memcpy(merged, currentNode, 32);
+                        memcpy(merged + 32, levels[i][index + 1], 32);
+                    }
+                    else
+                    {
+                        memcpy(merged + 32, currentNode, 32);
+                        memcpy(merged, levels[i][index - 1], 32);
+                    }
+                    sha.update(merged, 64);
+                    uint8_t *digest = sha.digest();
+                    memcpy(currentNode, digest, 32);
+                    delete[] digest;
+                    index = index / 2;
+                }
+                ri++;
+            }
+            else // accessType == WR
+            {
+                // update the merkle tree
+
+                uint8_t prev_path[tree_depth][32];
+                uint8_t prev_load_hash[32];
+                memcpy(prev_load_hash, levels[tree_depth - 1][v_addr], 32);
+                sha.clear();
+                sha.update(to_string(lwMap[v_addr] * 2));
+
+                uint8_t *prev_store_hash = sha.digest();
+
+                uint8_t *loaded_leaf = prev_load_hash;
+                uint8_t *stored_leaf = prev_store_hash;
+
+                uint8_t address_bits[tree_depth];
+
+                uint32_t addr = v_addr;
+                for (int i = 0; i < tree_depth; i++)
+                {
+                    uint32_t tmp = (addr & 0x01);
+                    address_bits[i] = tmp;
+                    addr = addr / 2;
+                    // std::cout << address_bits[tree_depth-1-i] << std::endl;
+                }
+
+                uint32_t index = v_addr;
+
+                uint8_t load_block[64], store_block[64];
+
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    bool computed_is_right = address_bits[tree_depth - 1 - i] == 0;
+                    uint8_t *other = computed_is_right ? levels[i][index + 1] : levels[i][index - 1];
+
+                    memcpy(prev_path[i], other, 32);
+
+                    if (!computed_is_right)
+                    {
+                        memcpy(load_block, other, 32);
+                        memcpy(load_block + 32, prev_load_hash, 32);
+                        memcpy(store_block, other, 32);
+                        memcpy(store_block + 32, prev_store_hash, 32);
+                    }
+                    else
+                    {
+                        memcpy(load_block + 32, other, 32);
+                        memcpy(load_block, prev_load_hash, 32);
+                        memcpy(store_block + 32, other, 32);
+                        memcpy(store_block, prev_store_hash, 32);
+                    }
+                    sha.clear();
+                    sha.update(load_block, 64);
+                    uint8_t *load_digest = sha.digest();
+                    memcpy(prev_load_hash, load_digest, 32);
+                    delete[] load_digest;
+
+                    sha.clear();
+                    sha.update(store_block, 64);
+                    uint8_t *store_digest = sha.digest();
+                    memcpy(prev_store_hash, store_digest, 32);
+                    delete[] store_digest;
+
+                    memcpy(levels[i][index], prev_store_hash, 32); // update the path
+
+                    index = index / 2;
+                }
+
+                lwMap[v_addr] = 2 * lwMap[v_addr];
+
+                INC_INT_STATS(int_comm_cost, (tree_depth + 4) * digest_len / 8);
+
+                // ship prev_path, load_root, store_root, loaded_leaf, stored_leaf
+
+                // verification
+                uint8_t currentNode[32], merged[64];
+                index = v_addr;
+                memcpy(currentNode, levels[tree_depth - 1][v_addr], 32);
+                for (int i = tree_depth - 1; i >= 0; i--)
+                {
+                    sha.clear();
+                    if (address_bits[tree_depth - 1 - i] == 0)
+                    {
+                        memcpy(merged, currentNode, 32);
+                        memcpy(merged + 32, levels[i][index + 1], 32);
+                    }
+                    else
+                    {
+                        memcpy(merged + 32, currentNode, 32);
+                        memcpy(merged, levels[i][index - 1], 32);
+                    }
+                    sha.update(merged, 64);
+                    uint8_t *digest = sha.digest();
+                    memcpy(currentNode, digest, 32);
+                    delete[] digest;
+                    index = index / 2;
+                }
+            }
+        }
+
+        std::this_thread::sleep_for(timespan); // simulate the latency of communication between server and client
+        // usleep(SIM_NET_LATENCY);
+        uint64_t t_verify = get_sys_clock();
+        INC_INT_STATS(time_latency_verify, t_verify - tt2);
+        INC_INT_STATS(int_latency_num, 1);
+    }
+
+    uint64_t end_time = get_sys_clock();
+    INC_INT_STATS(time_merkle_prove, end_time - init_time);
+    pthread_join(p_log, NULL);
+#endif
+}
+
+void initADProving()
+{
+    assert(MEM_INTEGRITY == RSA_AD); // && CC_ALG == NO_WAIT);
+    mpz_init(mp_POE_L);
+    mpz_set_str(mp_POE_L, POE_L, 10);
+    mpz_init(mp_POE_q); // to simulate calc Q
+    mpz_init(mp_POE_Q); // to simulate calc Q
     mpz_init(mp_N);
-    mpz_set_str(mp_N, N_128BIT, 10);
+    mpz_init(mp_MSMOD);
+    // mpz_import(mp_MSMOD, 1, 1, sizeof(g_ms_mod), 0, 0, &g_ms_mod);
+    mpz_set_str(mp_MSMOD, MS_MOD, 10);
+    mpz_set_str(mp_N, N_IN_USE, 10);
     mpz_init(mp_BN128_ORDER);
     mpz_set_str(mp_BN128_ORDER, BN128_ORDER, 10);
 
     mpz_init(mp_G);
     mpz_set_ui(mp_G, __LTM_G);
+    // init coeffs
+#if MS_LIMBS > 2
+    for (uint32_t i = 1; i <= 2 * MS_LIMBS - 1; i++)
+    {
+        multi_scalar_coeff[i][0] = 1;
+        for (uint32_t j = 1; j <= MS_LIMBS - 1; j++)
+        {
+            // coefficient hack
+            multi_scalar_coeff[i][j] = multi_scalar_coeff[i][j + MS_LIMBS] = multi_scalar_coeff[i][j - 1] * i;
+        }
+    }
+#endif
+}
+
+void proveInteractive()
+{
+
+    // assert(false);
+    //#if false
+
+    initADProving();
 
     log_manager->_logger[0]->flushRestNClose();
     uint64_t numEntries = 0;
@@ -1183,7 +1642,7 @@ void proveInteractive()
     new (latestWrittenIndex) map<uint32_t, uint32_t>();
 
     map<uint32_t, uint32_t> &lwMap = *latestWrittenIndex;
-    
+
     bool firstElementInBatch = true;
     uint32_t prod_init_hash = 1;
     uint32_t lastAB = -1;
@@ -1209,8 +1668,8 @@ void proveInteractive()
             }
             else
             {
-                PAUSE //usleep(50);
-                INC_INT_STATS(time_io, get_sys_clock() - tt);
+                PAUSE // usleep(50);
+                    INC_INT_STATS(time_io, get_sys_clock() - tt);
                 continue;
             }
         }
@@ -1220,13 +1679,13 @@ void proveInteractive()
         // | checksum | size | ... |
         assert(*(uint32_t *)entry == 0xbeef || entry[0] == 0x7f);
         char *log_entry = entry + sizeof(uint32_t) * 2;
-        //recover_txn(entry + sizeof(uint32_t) * 2);
+        // recover_txn(entry + sizeof(uint32_t) * 2);
         uint32_t offset = 0;
 
         uint32_t num_keys;
 
         UNPACK(log_entry, num_keys, offset);
-        //cout << "numkeys " << num_keys << endl;
+        // cout << "numkeys " << num_keys << endl;
 
         uint32_t wi = 0;
         uint32_t ri = 0;
@@ -1255,13 +1714,12 @@ void proveInteractive()
 #if WORKLOAD == YCSB
             ((ycsb_wl *)glob_manager->get_workload())->the_index->index_read(key, m_item, 0, GET_THD_ID);
 #elif WORKLOAD == TPCC
-            tpcc_wl * wl = (tpcc_wl *)glob_manager->get_workload();
+            tpcc_wl *wl = (tpcc_wl *)glob_manager->get_workload();
             wl->tpcc_tables[(TableName)table_id]->get_primary_index()->index_read(
                 key,
-                m_item, 
-                0, 
-                GET_THD_ID
-            );
+                m_item,
+                0,
+                GET_THD_ID);
             key = key * NUM_TABLES + table_id; // get unique keys
 #else
             assert(0);
@@ -1286,7 +1744,7 @@ void proveInteractive()
                     INC_INT_STATS(int_comm_cost, 2 * 128 / 8); // estimate the communication cost: raw value + A + B, the raw value is the same as the init value, so omitted here.
                 }
                 else
-                {                    
+                {
                     NEW_EXTYPE(quotient, 0)
                     mpz_t Hval;
                     mpz_init(Hval);
@@ -1311,9 +1769,9 @@ void proveInteractive()
                 H_mp(Hval, v_addr, val);
 
                 mpz_powm(memDigest.get_mpz_t(), memDigest.get_mpz_t(), Hval, mp_N);
-                
+
                 mpz_mul(currentProd.get_mpz_t(), currentProd.get_mpz_t(), Hval);
-                
+
                 INC_INT_STATS(int_comm_cost, 0);
                 // no communication happens for write
 
@@ -1322,19 +1780,18 @@ void proveInteractive()
                 memCounter++;
                 wi++;
             }
-
         }
 
         std::this_thread::sleep_for(timespan); // simulate the latency of communication between server and client
-        //usleep(SIM_NET_LATENCY);
+        // usleep(SIM_NET_LATENCY);
         uint64_t t_verify = get_sys_clock();
         INC_INT_STATS(time_latency_verify, t_verify - tt2);
         INC_INT_STATS(int_latency_num, 1);
     }
-    
+
     _mm_free(latestWrittenIndex);
     pthread_join(p_log, NULL);
-//#endif
+    //#endif
 }
 
 /*
@@ -1355,37 +1812,31 @@ void proveHandWritten()
     libff::inhibit_profiling_counters = true; // libff profiling is not thread-safe.
     typedef libff::Fr<default_r1cs_ppzksnark_pp> FieldT;
 
-#if MEM_INTEGRITY == RSA_AD    
+#if MEM_INTEGRITY == RSA_AD
     ////////////////////////////
-    mpz_init(mp_N);
-    mpz_set_str(mp_N, N_128BIT, 10);
-    mpz_init(mp_BN128_ORDER);
-    mpz_set_str(mp_BN128_ORDER, BN128_ORDER, 10);
-    
-    mpz_init(mp_G);
-    mpz_set_ui(mp_G, __LTM_G);
-    
-#else
-/*
-    // Init merkle tree
-    typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
-    assert(g_synth_table_size == 1024 * 1024 * 10);
-    size_t tree_depth = 24;
-    const size_t digest_len = HashT::get_digest_len();
+    initADProving();
 
-    std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
-    libff::bit_vector leaf, root, address_bits(tree_depth);
-    int leaf_count = std::pow(2, tree_depth);
-    for (int i = 0; i < leaf_count; i++) {
-            libff::bit_vector tmp = hash256<HashT>("0");
-            //std::cout << *binToHex<HashT>(tmp) << std::endl;
-            levels[tree_depth - 1].push_back(tmp);
-    }
-    calcAllLevels<HashT>(levels, tree_depth-1);
-    libff::bit_vector input = levels[0][0];
-    input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
-    root = HashT::get_hash(input);
-*/
+#else
+                                               /*
+                                                   // Init merkle tree
+                                                   typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
+                                                   assert(g_synth_table_size == 1024 * 1024 * 10);
+                                                   size_t tree_depth = 24;
+                                                   const size_t digest_len = HashT::get_digest_len();
+                                           
+                                                   std::vector<std::vector<libff::bit_vector>> levels(tree_depth);
+                                                   libff::bit_vector leaf, root, address_bits(tree_depth);
+                                                   int leaf_count = std::pow(2, tree_depth);
+                                                   for (int i = 0; i < leaf_count; i++) {
+                                                           libff::bit_vector tmp = hash256<HashT>("0");
+                                                           //std::cout << *binToHex<HashT>(tmp) << std::endl;
+                                                           levels[tree_depth - 1].push_back(tmp);
+                                                   }
+                                                   calcAllLevels<HashT>(levels, tree_depth-1);
+                                                   libff::bit_vector input = levels[0][0];
+                                                   input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
+                                                   root = HashT::get_hash(input);
+                                               */
 #endif
 
     map<uint32_t, uint32_t> initMap;
@@ -1419,12 +1870,13 @@ void proveHandWritten()
     vector<uint32_t> txnIDs;
 
     uint64_t total_num_commits = 0;
-    for (uint32_t tid = 0; tid < g_thread_cnt; tid ++) { 
+    for (uint32_t tid = 0; tid < g_thread_cnt; tid++)
+    {
         total_num_commits += stats->_stats[tid]->_int_stats[STAT_num_commits];
     }
 
     uint64_t proverload = total_num_commits / g_prover_threads + 1;
-    
+
     uint64_t lastProverThreadCount = 0;
     uint64_t ptcounter = 0;
 
@@ -1446,7 +1898,7 @@ void proveHandWritten()
             }
             else
             {
-                PAUSE //usleep(50);
+                PAUSE // usleep(50);
                     INC_INT_STATS(time_io, get_sys_clock() - tt);
                 continue;
             }
@@ -1457,13 +1909,13 @@ void proveHandWritten()
         // | checksum | size | ... |
         assert(*(uint32_t *)entry == 0xbeef || entry[0] == 0x7f);
         char *log_entry = entry + sizeof(uint32_t) * 2;
-        //recover_txn(entry + sizeof(uint32_t) * 2);
+        // recover_txn(entry + sizeof(uint32_t) * 2);
         uint32_t offset = 0;
 
         uint32_t num_keys;
 
         UNPACK(log_entry, num_keys, offset);
-        //cout << "numkeys " << num_keys << endl;
+        // cout << "numkeys " << num_keys << endl;
 
         uint32_t wi = 0;
         uint32_t ri = 0;
@@ -1492,43 +1944,42 @@ void proveHandWritten()
 #if WORKLOAD == YCSB
             ((ycsb_wl *)glob_manager->get_workload())->the_index->index_read(key, m_item, 0, GET_THD_ID);
 #elif WORKLOAD == TPCC
-            tpcc_wl * wl = (tpcc_wl *)glob_manager->get_workload();
+            tpcc_wl *wl = (tpcc_wl *)glob_manager->get_workload();
             wl->tpcc_tables[(TableName)table_id]->get_primary_index()->index_read(
                 key,
-                m_item, 
-                0, 
-                GET_THD_ID
-            );
+                m_item,
+                0,
+                GET_THD_ID);
             key = key * NUM_TABLES + table_id; // get unique keys
 #else
             assert(0);
 #endif
 
             uint32_t v_addr = table_id * g_synth_table_size + key;
-            v_addr = v_addr % g_synth_table_size;  // Hack
+            v_addr = v_addr % g_synth_table_size; // Hack
 
             addrs.push_back(v_addr);
             values.push_back(val);
-            if(accessType == RD)
-                txnIDs.push_back(txnID<<1);
+            if (accessType == RD)
+                txnIDs.push_back(txnID << 1);
             else
-                txnIDs.push_back((txnID<<1) | 1);
+                txnIDs.push_back((txnID << 1) | 1);
         }
 
 #if CC_ALG == DETRESERVE
         UNPACK(log_entry, txnID, offset);
         // we will be using the batch_num as txn_id
 #else
-        txnID ++;
+        txnID++;
 #endif
         uint64_t tt3 = get_sys_clock();
         INC_INT_STATS(time_prepareTraces, tt3 - tt2);
 
-        if(g_verification_txn_count - lastProverThreadCount >= proverload)
+        if (g_verification_txn_count - lastProverThreadCount >= proverload)
         {
             cout << lastProverThreadCount << " " << g_verification_txn_count << " to thread " << ptcounter << endl;
-            ProverThreadArg * pta;
-            pta = (ProverThreadArg *) _mm_malloc(sizeof(ProverThreadArg), ALIGN_SIZE);
+            ProverThreadArg *pta;
+            pta = (ProverThreadArg *)_mm_malloc(sizeof(ProverThreadArg), ALIGN_SIZE);
             new (pta) ProverThreadArg;
             pta->initDigest = initialDigest;
             pta->initMap = initMap;
@@ -1549,21 +2000,21 @@ void proveHandWritten()
             INC_INT_STATS(time_dispatcher_latency, get_sys_clock() - starttime);
             INC_INT_STATS(int_dispatcher_latency_num, 1);
 
-            pthread_create(&p_prover_thds[ptcounter++], NULL, proveHandWrittenThread, (void*) pta);
+            pthread_create(&p_prover_thds[ptcounter++], NULL, proveHandWrittenThread, (void *)pta);
 
             // apply the changes to initMap and initialDigest;
             uint32_t opLength = values.size();
-            for(uint32_t i=0; i<opLength; i++)
-                if(txnIDs[i] & 1)
+            for (uint32_t i = 0; i < opLength; i++)
+                if (txnIDs[i] & 1)
                 {
                     initMap[addrs[i]] = values[i];
 #if MEM_INTEGRITY == RSA_AD
-                    //initialDigest = ipow_fp<EX_TYPE>(initialDigest, H(addrs[i], values[i]));
+                    // initialDigest = ipow_fp<EX_TYPE>(initialDigest, H(addrs[i], values[i]));
                     mpz_t Hval;
                     mpz_init(Hval);
                     H_mp(Hval, addrs[i], values[i]);
                     mpz_powm(initialDigest.get_mpz_t(), initialDigest.get_mpz_t(), Hval, mp_N);
-#else 
+#else
 /*
                     // Update Merkle Tree
                     levels[tree_depth - 1][addrs[i] % g_synth_table_size] = hash256<HashT>(to_string(values[i]));
@@ -1579,20 +2030,20 @@ void proveHandWritten()
         }
     }
 
-    if(lastProverThreadCount < g_verification_txn_count)
+    if (lastProverThreadCount < g_verification_txn_count)
     {
-            cout << lastProverThreadCount << " " << g_verification_txn_count << " to thread " << ptcounter << endl;
-            ProverThreadArg * pta;
+        cout << lastProverThreadCount << " " << g_verification_txn_count << " to thread " << ptcounter << endl;
+        ProverThreadArg *pta;
 
-            pta = (ProverThreadArg *) _mm_malloc(sizeof(ProverThreadArg), ALIGN_SIZE);
-            new (pta) ProverThreadArg;
-            
-            pta->initDigest = initialDigest;
-            pta->initMap = initMap;
-            pta->values = values;
-            pta->addrs = addrs;
-            pta->txnIDs = txnIDs;
-            pta->id = ptcounter;
+        pta = (ProverThreadArg *)_mm_malloc(sizeof(ProverThreadArg), ALIGN_SIZE);
+        new (pta) ProverThreadArg;
+
+        pta->initDigest = initialDigest;
+        pta->initMap = initMap;
+        pta->values = values;
+        pta->addrs = addrs;
+        pta->txnIDs = txnIDs;
+        pta->id = ptcounter;
 #if MEM_INTEGRITY == MERKLE_TREE
 /*
             calcAllLevels<HashT>(levels, tree_depth-1);
@@ -1602,10 +2053,10 @@ void proveHandWritten()
             pta->root = root;
 */
 #endif
-            INC_INT_STATS(time_dispatcher_latency, get_sys_clock() - starttime);
-            INC_INT_STATS(int_dispatcher_latency_num, 1);
-            
-            proveHandWrittenThread((void*) pta);
+        INC_INT_STATS(time_dispatcher_latency, get_sys_clock() - starttime);
+        INC_INT_STATS(int_dispatcher_latency_num, 1);
+
+        proveHandWrittenThread((void *)pta);
     }
 
     pthread_join(p_log, NULL);
@@ -1617,15 +2068,27 @@ void proveHandWritten()
     cout << "Provers finished." << endl;
 }
 
-void * proveHandWrittenThread(void * vpta) 
+void *proveHandWrittenThread(void *vpta)
 {
     uint64_t starttime = get_sys_clock();
 
-    ProverThreadArg* pta = (ProverThreadArg*) vpta;
+    ProverThreadArg *pta = (ProverThreadArg *)vpta;
 
     protoboard<FieldT> pb;
+    vector<pb_variable<FieldT>> mp_N_pbv(MS_LIMBS);
 
-# if MEM_INTEGRITY == MERKLE_TREE
+    uint32_t num_limbs = MS_LIMBS;
+    for (uint32_t i = 0; i < num_limbs; i++)
+    {
+        mp_N_pbv[i].allocate(pb, "mp_N_pbv");
+    }
+    get_fields_from_mpz(pb, mp_N, mp_N_pbv, num_limbs, mp_MSMOD);
+
+    pb_variable<FieldT> mp_L_pb;
+    mp_L_pb.allocate(pb, "mp_L_pb");
+    pb.val(mp_L_pb) = FieldT(mp_POE_L);
+
+#if MEM_INTEGRITY == MERKLE_TREE
 
     // Init merkle tree
     typedef sha256_two_to_one_hash_gadget<FieldT> HashT;
@@ -1637,14 +2100,15 @@ void * proveHandWrittenThread(void * vpta)
     libff::bit_vector leaf, root, address_bits(tree_depth);
     int leaf_count = std::pow(2, tree_depth);
     libff::bit_vector zero_hash = hash256<HashT>("0");
-    for (int i = 0; i < leaf_count; i++) {
-            libff::bit_vector tmp = zero_hash;
-            if (pta->initMap.find(i) != pta->initMap.end())
-                tmp = hash256<HashT>(to_string(pta->initMap[i]));
-            //std::cout << *binToHex<HashT>(tmp) << std::endl;
-            levels[tree_depth - 1].push_back(tmp);
+    for (int i = 0; i < leaf_count; i++)
+    {
+        libff::bit_vector tmp = zero_hash;
+        if (pta->initMap.find(i) != pta->initMap.end())
+            tmp = hash256<HashT>(to_string(pta->initMap[i]));
+        // std::cout << *binToHex<HashT>(tmp) << std::endl;
+        levels[tree_depth - 1].push_back(tmp);
     }
-    calcAllLevels<HashT>(levels, tree_depth-1);
+    calcAllLevels<HashT>(levels, tree_depth - 1);
     libff::bit_vector input = levels[0][0];
     input.insert(input.end(), levels[0][1].begin(), levels[0][1].end());
     root = HashT::get_hash(input);
@@ -1660,32 +2124,33 @@ void * proveHandWrittenThread(void * vpta)
     uint32_t my_thread_id = g_thread_cnt + g_num_logger + pta->id;
     glob_manager->set_thd_id(my_thread_id);
 
-    if(opLength == 0) return NULL;
+    if (opLength == 0)
+        return NULL;
 
     vector<pb_variable<FieldT>> pbv_val;
     vector<pb_variable<FieldT>> pbv_addr;
     vector<pb_variable<FieldT>> pbv_aux;
-    vector<pb_variable<FieldT>> pbv_acc1;
-    vector<pb_variable<FieldT>> pbv_acc2;
+    vector<vector<pb_variable<FieldT>>> pbv_acc1;
+    vector<vector<pb_variable<FieldT>>> pbv_acc2;
     vector<pb_variable<FieldT>> pbv_prod;
     vector<pb_variable<FieldT>> pbv_acc_prime;
     vector<pb_variable<FieldT>> pbv_A;
     vector<pb_variable<FieldT>> pbv_B;
-    vector<pb_variable<FieldT>> pbv_local_digest;
-    pb_variable<FieldT> pb_G;
+    vector<vector<pb_variable<FieldT>>> pbv_local_digest;
+    vector<pb_variable<FieldT>> pb_G(MS_LIMBS);
 
-    pb_G.allocate(pb, "G");
-    pb.ADD_CONSTRAINT(pb_G, 1, __LTM_G);  // pb_G == g
-    pb.val(pb_G) = __LTM_G;
+    allocate_pb_multi_scalar(pb, pb_G, MS_LIMBS, "g");
+    pb.ADD_CONSTRAINT(pb_G[0], 1, __LTM_G); // pb_G == g
+    pb.val(pb_G[0]) = __LTM_G;
 
-    //pb_variable<FieldT> ldigest;
-    //ldigest.allocate(pb, "local-digest-init");
-    //pb.ADD_CONSTRAINT(ldigest, 1, __LTM_G);
+    // pb_variable<FieldT> ldigest;
+    // ldigest.allocate(pb, "local-digest-init");
+    // pb.ADD_CONSTRAINT(ldigest, 1, __LTM_G);
     pbv_local_digest.push_back(pb_G);
 
     ////////////////////////////////////////////
 
-    //FF_TYPE memDigest = FF_INIT_2INT64(0, __LTM_G);
+    // FF_TYPE memDigest = FF_INIT_2INT64(0, __LTM_G);
     NEW_EXTYPE(memDigest, __LTM_G);
     NEW_EXTYPE(currentProd, 1);
 
@@ -1699,13 +2164,13 @@ void * proveHandWrittenThread(void * vpta)
     new (prodList) vector<EX_TYPE>();
     */
 
-    //inputList = (vector<uint32_t> *)_mm_malloc(sizeof(vector<uint32_t>), ALIGN_SIZE);
-    //new (inputList) vector<uint32_t>();
+    // inputList = (vector<uint32_t> *)_mm_malloc(sizeof(vector<uint32_t>), ALIGN_SIZE);
+    // new (inputList) vector<uint32_t>();
 
     map<uint32_t, uint32_t> &lwMap = pta->initMap;
-    
-    //uint32_t prod_init_hash = 1;
-    //uint32_t writeExpProd = 1;
+
+    // uint32_t prod_init_hash = 1;
+    // uint32_t writeExpProd = 1;
 
     uint32_t total_inputs = 0;
 
@@ -1713,6 +2178,11 @@ void * proveHandWrittenThread(void * vpta)
     vector<pb_variable<FieldT>> pbv_wrList;
     NEW_EXTYPE(batchVal, 1)
     vector<pb_variable<FieldT>> pbv_initReadList;
+    mpz_t readlist_exponent;
+    mpz_init(readlist_exponent);
+    mpz_t init_read_list_back;
+    mpz_init(init_read_list_back);
+
     NEW_EXTYPE(initReadBatchVal, 1)
     vector<pb_variable<FieldT>> pbv_readBatchList;
     NEW_EXTYPE(readBatchVal, 1)
@@ -1724,7 +2194,7 @@ void * proveHandWrittenThread(void * vpta)
 
 #if MEM_INTEGRITY == RSA_AD
 
-    for(uint32_t ind = 0; ind < opLength; ind ++ )
+    for (uint32_t ind = 0; ind < opLength; ind++)
     {
         uint64_t loopstart = get_sys_clock();
 
@@ -1733,160 +2203,296 @@ void * proveHandWrittenThread(void * vpta)
         uint32_t txnID = pta->txnIDs[ind] >> 1;
         uint32_t accessType = pta->txnIDs[ind] & 1;
 
-        if(txnID != lastTxnID && pbv_wrList.size() > 0)
+        if (txnID != lastTxnID && pbv_wrList.size() > 0)
         {
             // deal with read
             // initread
             if (pbv_initReadList.size() > 0)
             {
-                
-                    pbv_A.push_back(pb_variable<FieldT>());
-                    auto & pb_A = pbv_A.back();
-                    pb_A.allocate(pb, "A");
 
-                    pbv_B.push_back(pb_variable<FieldT>());
-                    auto & pb_B = pbv_B.back();
-                    pb_B.allocate(pb, "B");
+                pbv_A.push_back(pb_variable<FieldT>());
+                auto &pb_A = pbv_A.back();
+                pb_A.allocate(pb, "A");
 
-                    total_inputs += 2;
-                    //uint32_t A, B;
-                    //xgcd(currentProd, initReadBatchVal, A, B);
-                    NEW_EXTYPE(A, 0)
-                    NEW_EXTYPE(B, 0)
-                    NEW_EXTYPE(_g, 0)
-                    mpz_gcdext(_g.get_mpz_t(), A.get_mpz_t(), B.get_mpz_t(), currentProd.get_mpz_t(), initReadBatchVal.get_mpz_t());
-                    
-                    pb.val(pb_A) = TO_FIELD(A);
-                    pb.val(pb_B) = TO_FIELD(B);
+                pbv_B.push_back(pb_variable<FieldT>());
+                auto &pb_B = pbv_B.back();
+                pb_B.allocate(pb, "B");
 
-                    pb_variable<FieldT> aux1, aux2, aux3, aux4;
+                vector<pb_variable<FieldT>> pb_A_Q(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_B_Q(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_A_Q_raised(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_B_Q_raised(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux1_POE(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux1_premod(2 * MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux1_q(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux2_POE(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux2_premod(2 * MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_aux2_q(MS_LIMBS);
 
-                    aux1.allocate(pb, "aux1");
-                    aux2.allocate(pb, "aux2");
-                    aux3.allocate(pb, "aux3");
-                    aux4.allocate(pb, "aux4");
+                pb_variable<FieldT> readlist_exp_pbv;
+                readlist_exp_pbv.allocate(pb, "readlist_exp_pbv");
 
-                    pow_mod_p<FieldT> pmp(pb, pbv_local_digest.back(), pb_A, aux1, N_BITS);
-                    pmp.generate_r1cs_constraints();
-                    
-                    pow_mod_p<FieldT> pmp2(pb, pbv_initReadList.back(), pb_B, aux2, N_BITS);
-                    pmp2.generate_r1cs_constraints();
-                    
-                    // due to integer intractability assumption, the gcd might not be 1
-                    // in future version we will move to real primes.
+                total_inputs += 2;
+                // uint32_t A, B;
+                // xgcd(currentProd, initReadBatchVal, A, B);
+                NEW_EXTYPE(A, 0)
+                NEW_EXTYPE(B, 0)
+                NEW_EXTYPE(_g, 0)
+                mpz_gcdext(_g.get_mpz_t(), A.get_mpz_t(), B.get_mpz_t(), currentProd.get_mpz_t(), initReadBatchVal.get_mpz_t());
 
-                    // pb.ADD_CONSTRAINT(aux1, aux2, aux3);
-                    mod_p<FieldT> g(pb, aux3, aux4, pb_G, N_BITS);
-                    g.generate_r1cs_constraints();
-                    
+                pb.val(pb_A) = TO_FIELD(A);
+                pb.val(pb_B) = TO_FIELD(B);
 
-                    NEW_EXTYPE(mp_aux1, 0)
-                    NEW_EXTYPE(mp_aux2, 0)
-                    NEW_EXTYPE(mp_aux3, 0)
-                    NEW_EXTYPE(mp_aux4, 0)
+                vector<pb_variable<FieldT>> aux1(MS_LIMBS), aux2(MS_LIMBS), aux3(MS_LIMBS), aux4(MS_LIMBS);
 
-                    mpz_powm(mp_aux1.get_mpz_t(), memDigest.get_mpz_t(), A.get_mpz_t(), mp_N);
-                    mpz_powm(mp_aux2.get_mpz_t(), initReadBatchVal.get_mpz_t(), B.get_mpz_t(), mp_N);
-                    mpz_mul(mp_aux3.get_mpz_t(), mp_aux1.get_mpz_t(), mp_aux2.get_mpz_t());
-                    mpz_cdiv_q(mp_aux4.get_mpz_t(), mp_aux3.get_mpz_t(), mp_N);
+                for (uint32_t idx = 0; idx < MS_LIMBS; idx++)
+                {
+                    aux1[idx].allocate(pb, "aux1");
+                    aux2[idx].allocate(pb, "aux2");
+                    aux3[idx].allocate(pb, "aux3");
+                    aux4[idx].allocate(pb, "aux4");
+                    pb_A_Q[idx].allocate(pb, "pb_A_Q");
+                    pb_B_Q[idx].allocate(pb, "pb_B_Q");
+                    pb_A_Q_raised[idx].allocate(pb, "pb_A_Q_raised");
+                    pb_B_Q_raised[idx].allocate(pb, "pb_B_Q_raised");
+                    pb_aux1_POE[idx].allocate(pb, "pb_aux1_POE");
+                    pb_aux2_POE[idx].allocate(pb, "pb_aux2_POE");
+                    pb_aux1_q[idx].allocate(pb, "pb_aux1_q");
+                    pb_aux2_q[idx].allocate(pb, "pb_aux2_q");
+                }
 
-                    pb.val(aux1) = TO_FIELD(mp_aux1);
-                    pb.val(aux2) = TO_FIELD(mp_aux2);
-                    pb.val(aux3) = TO_FIELD(mp_aux3);
-                    pb.val(aux4) = TO_FIELD(mp_aux4);
+                allocate_pb_multi_scalar(pb, pb_aux1_premod, 2 * MS_LIMBS, "pb_aux1_premod");
+                allocate_pb_multi_scalar(pb, pb_aux2_premod, 2 * MS_LIMBS, "pb_aux2_premod");
 
-                    pmp.generate_r1cs_witness();
-                    pmp2.generate_r1cs_witness();
-                    g.generate_r1cs_witness();
+                // aux1 = pbv_local_digest.back() ^ pb_A
 
-                    total_inputs += 4;
-                    
-                    pbv_initReadList.clear();
-                    initReadBatchVal = 1;
+                // simulate computation cost of server-side PoE preparation
+                prepare_POE(A.get_mpz_t());
+                prepare_POE(B.get_mpz_t());
+                // TODO: set values for pb_A_Q, pb_A_Q_raised, pb_aux1_POE, pb_B_Q, pb_B_Q_raised, pb_aux2_POE
+
+                pow_mod_p_multi_scalar<FieldT> pmp(pb, pbv_local_digest.back(), mp_N_pbv, pb_A, pb_aux1_POE, POE_BITS, MS_LIMBS, mp_MSMOD);
+                pow_mod_p_multi_scalar<FieldT> pmp_POE_A(pb, pb_A_Q, mp_N_pbv, mp_L_pb, pb_A_Q_raised, POE_BITS, MS_LIMBS, mp_MSMOD);
+                mul_multi_scalar<FieldT> mul_POE_A(pb, pb_A_Q_raised, pb_aux1_POE, pb_aux1_premod, MS_LIMBS, mp_MSMOD);
+                mod_p_multi_scalar<FieldT> mul_mod_A(pb, pb_aux1_premod, mp_N_pbv, pb_aux1_q, aux1, POE_BITS, MS_LIMBS, mp_MSMOD);
+                pmp.generate_r1cs_constraints();
+                pmp_POE_A.generate_r1cs_constraints();
+                mul_POE_A.generate_r1cs_constraints();
+                mul_mod_A.generate_r1cs_constraints();
+                // aux2 = g^(pbv_initReadList.back() * pb_B)
+
+                pb.ADD_CONSTRAINT(pbv_initReadList.back(), pb_B, readlist_exp_pbv);
+
+                pb.val(pbv_initReadList.back()).as_bigint().to_mpz(init_read_list_back);
+                mpz_mul(readlist_exponent, B.get_mpz_t(), init_read_list_back);
+                mpz_mod(readlist_exponent, readlist_exponent, mp_POE_L); // PoE hack
+                pb.val(readlist_exp_pbv) = FieldT(readlist_exponent);
+                pow_mod_p_multi_scalar<FieldT> pmp2(pb, pb_G, mp_N_pbv, readlist_exp_pbv, pb_aux2_POE, POE_BITS, MS_LIMBS, mp_MSMOD);
+                pow_mod_p_multi_scalar<FieldT> pmp_POE_B(pb, pb_B_Q, mp_N_pbv, mp_L_pb, pb_B_Q_raised, POE_BITS, MS_LIMBS, mp_MSMOD);
+                mul_multi_scalar<FieldT> mul_POE_B(pb, pb_B_Q_raised, pb_aux2_POE, pb_aux2_premod, MS_LIMBS, mp_MSMOD);
+                mod_p_multi_scalar<FieldT> mul_mod_B(pb, pb_aux2_premod, mp_N_pbv, pb_aux2_q, aux2, POE_BITS, MS_LIMBS, mp_MSMOD);
+
+                pmp2.generate_r1cs_constraints();
+                pmp_POE_B.generate_r1cs_constraints();
+                mul_POE_B.generate_r1cs_constraints();
+                mul_mod_B.generate_r1cs_constraints();
+
+                // due to integer intractability assumption, the gcd might not be 1
+                // in future version we will move to real primes.
+
+                // pb.ADD_CONSTRAINT(aux1, aux2, aux3);
+                mod_p_multi_scalar<FieldT> g(pb, aux3, mp_N_pbv, aux4, pb_G, POE_BITS, MS_LIMBS, mp_MSMOD);
+
+                g.generate_r1cs_constraints();
+
+                NEW_EXTYPE(mp_aux1, 0)
+                NEW_EXTYPE(mp_aux2, 0)
+                NEW_EXTYPE(mp_aux3, 0)
+                NEW_EXTYPE(mp_aux4, 0)
+
+                mpz_powm(mp_aux1.get_mpz_t(), memDigest.get_mpz_t(), A.get_mpz_t(), mp_N);
+                mpz_powm(mp_aux2.get_mpz_t(), initReadBatchVal.get_mpz_t(), B.get_mpz_t(), mp_N);
+                mpz_mul(mp_aux3.get_mpz_t(), mp_aux1.get_mpz_t(), mp_aux2.get_mpz_t());
+                mpz_cdiv_q(mp_aux4.get_mpz_t(), mp_aux3.get_mpz_t(), mp_N);
+
+                get_fields_from_mpz(pb, mp_aux1.get_mpz_t(), aux1, MS_LIMBS, mp_MSMOD);
+                get_fields_from_mpz(pb, mp_aux2.get_mpz_t(), aux2, MS_LIMBS, mp_MSMOD);
+                get_fields_from_mpz(pb, mp_aux3.get_mpz_t(), aux3, MS_LIMBS, mp_MSMOD);
+                get_fields_from_mpz(pb, mp_aux4.get_mpz_t(), aux4, MS_LIMBS, mp_MSMOD);
+
+                pmp.generate_r1cs_witness();
+                pmp_POE_A.generate_r1cs_witness();
+                mul_POE_A.generate_r1cs_witness();
+                mul_mod_A.generate_r1cs_witness();
+
+                pmp2.generate_r1cs_witness();
+                pmp_POE_B.generate_r1cs_witness();
+                mul_POE_B.generate_r1cs_witness();
+                mul_mod_B.generate_r1cs_witness();
+
+                g.generate_r1cs_witness();
+
+                total_inputs += 4;
+
+                pbv_initReadList.clear();
+                initReadBatchVal = 1;
             }
-            
+
             // normal read batch
-            if(pbv_readBatchList.size() > 0)
+            if (pbv_readBatchList.size() > 0)
             {
 
-                    pbv_acc1.push_back(pb_variable<FieldT>());
-                    auto & pb_acc1 = pbv_acc1.back();
-                    pb_acc1.allocate(pb, "acc1");
+                pbv_acc1.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+                auto &pb_acc1 = pbv_acc1.back();
+                allocate_pb_multi_scalar(pb, pb_acc1, MS_LIMBS, "acc1");
 
-                    pow_mod_p<FieldT> pmp3(pb, pb_acc1, pbv_readBatchList.back(), pbv_local_digest.back(), N_BITS);
+                // acc1^pbv_readBatchList = pbv_localdigest
+                vector<pb_variable<FieldT>> pb_rbl_Q(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_rbl_Q_raised(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_localDigest_POE(MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_localDigest_premod(2 * MS_LIMBS);
+                vector<pb_variable<FieldT>> pb_localDigest_q(MS_LIMBS);
 
-                    pmp3.generate_r1cs_constraints();
-                    
+                allocate_pb_multi_scalar(pb, pb_rbl_Q, MS_LIMBS, "pb_rbl_Q");
+                allocate_pb_multi_scalar(pb, pb_rbl_Q_raised, MS_LIMBS, "pb_rbl_Q_raised");
+                allocate_pb_multi_scalar(pb, pb_localDigest_POE, MS_LIMBS, "pb_localDigest_POE");
+                allocate_pb_multi_scalar(pb, pb_localDigest_premod, MS_LIMBS, "pb_localDigest_premod");
+                allocate_pb_multi_scalar(pb, pb_localDigest_q, MS_LIMBS, "pb_localDigest_q");
 
-                    total_inputs += 1;
+                pow_mod_p_multi_scalar<FieldT> pmp_rbl(
+                    pb,
+                    pb_rbl_Q,
+                    mp_N_pbv,
+                    mp_L_pb,
+                    pb_rbl_Q_raised,
+                    POE_BITS,
+                    MS_LIMBS,
+                    mp_MSMOD);
 
-                    NEW_EXTYPE(quotient, 0)
+                pow_mod_p_multi_scalar<FieldT> pmp3(
+                    pb,
+                    pb_acc1,
+                    mp_N_pbv,
+                    pbv_readBatchList.back(),
+                    pb_localDigest_POE,
+                    POE_BITS,
+                    MS_LIMBS,
+                    mp_MSMOD);
 
-                    // quotient = currendProd // readBatchVal
-                    mpz_cdiv_q(quotient.get_mpz_t(), currentProd.get_mpz_t(), readBatchVal.get_mpz_t());
-                    NEW_EXTYPE(mp_acc1, 0)
-                    // mp_acc1 = g^quotient
-                    mpz_powm(mp_acc1.get_mpz_t(), mp_G, quotient.get_mpz_t(), mp_N);
+                mul_multi_scalar<FieldT> mul_POE_rbl(
+                    pb,
+                    pb_rbl_Q_raised,
+                    pb_localDigest_POE,
+                    pb_localDigest_premod,
+                    MS_LIMBS,
+                    mp_MSMOD);
 
-                    pb.val(pb_acc1) = TO_FIELD(mp_acc1);
-                    pmp3.generate_r1cs_witness();
+                mod_p_multi_scalar<FieldT> mul_mod_rbl(
+                    pb,
+                    pb_localDigest_premod,
+                    mp_N_pbv,
+                    pb_localDigest_q,
+                    pbv_local_digest.back(),
+                    POE_BITS,
+                    MS_LIMBS,
+                    mp_MSMOD);
 
-                    // hack: modify local digests right here because the digest are always updated per batch.
+                pmp3.generate_r1cs_constraints();
+                pmp_rbl.generate_r1cs_constraints();
+                mul_POE_rbl.generate_r1cs_constraints();
+                mul_mod_rbl.generate_r1cs_constraints();
 
-                    pbv_local_digest.push_back(pb_variable<FieldT>());
-                    auto & pb_localdigest = pbv_local_digest.back();
-                    pb_localdigest.allocate(pb, "local-digest");
+                total_inputs += 1;
 
-                    pb.ADD_CONSTRAINT(pb_acc1, 1, pb_localdigest); // now latest local digest inside the circuit equals pi = g^(S/H)
-                    pb.val(pb_localdigest) = pb.val(pb_acc1);
-                    
-                    memDigest = mp_acc1; // update digest in plaintext
-                    currentProd = quotient; // S <- S / H.
+                NEW_EXTYPE(quotient, 0)
 
-                    //pb.val(pb_acc1) = ipow(__LTM_G, quotient);
-                    readBatchVal = 1;
-                    pbv_readBatchList.clear();
+                // quotient = currendProd // readBatchVal
+                mpz_cdiv_q(quotient.get_mpz_t(), currentProd.get_mpz_t(), readBatchVal.get_mpz_t());
+                NEW_EXTYPE(mp_acc1, 0)
+                // simulate POE cost
+                prepare_POE(quotient.get_mpz_t());
+                // mp_acc1 = g^quotient
+                mpz_powm(mp_acc1.get_mpz_t(), mp_G, quotient.get_mpz_t(), mp_N);
+
+                get_fields_from_mpz(pb, mp_acc1.get_mpz_t(), pb_acc1, MS_LIMBS, mp_MSMOD);
+                // pb.val(pb_acc1) = TO_FIELD(mp_acc1);
+
+                pmp3.generate_r1cs_witness();
+                pmp_rbl.generate_r1cs_witness();
+                mul_POE_rbl.generate_r1cs_witness();
+                mul_mod_rbl.generate_r1cs_witness();
+
+                // hack: modify local digests right here because the digest are always updated per batch.
+
+                pbv_local_digest.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+                auto &pb_localdigest = pbv_local_digest.back();
+                allocate_pb_multi_scalar(pb, pb_localdigest, MS_LIMBS, "local-digest");
+                // pb_localdigest.allocate(pb, "local-digest");
+
+                eq_constraint_multi_scalar(pb, pb_acc1, pb_localdigest, MS_LIMBS);
+                // pb.ADD_CONSTRAINT(pb_acc1, 1, pb_localdigest); // now latest local digest inside the circuit equals pi = g^(S/H)
+                assign_multi_scalar(pb, pb_localdigest, pb_acc1, MS_LIMBS);
+                // pb.val(pb_localdigest) = pb.val(pb_acc1);
+
+                memDigest = mp_acc1;    // update digest in plaintext
+                currentProd = quotient; // S <- S / H.
+
+                // pb.val(pb_acc1) = ipow(__LTM_G, quotient);
+                readBatchVal = 1;
+                pbv_readBatchList.clear();
             }
 
             // deal with write
-            //auto & prev_local_digest = pbv_local_digest.back();
+            // auto & prev_local_digest = pbv_local_digest.back();
 
-            pbv_local_digest.push_back(pb_variable<FieldT>());
-            auto & pb_localdigest = pbv_local_digest.back();
-            pb_localdigest.allocate(pb, "local-digest");
+            // pbv_local_digest.push_back(pb_variable<FieldT>());
+            // auto & pb_localdigest = pbv_local_digest.back();
+            // pb_localdigest.allocate(pb, "local-digest");
 
-            auto & wrSoFar = pbv_wrList.back();
-            
-            pow_mod_p<FieldT> pmp4(pb, pbv_local_digest[pbv_local_digest.size() - 2], wrSoFar, pb_localdigest, N_BITS);
+            pbv_local_digest.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+            auto &pb_localdigest = pbv_local_digest.back();
+            allocate_pb_multi_scalar(pb, pb_localdigest, MS_LIMBS, "local-digest");
+
+            auto &wrSoFar = pbv_wrList.back();
+
+            pow_mod_p_multi_scalar<FieldT> pmp4(
+                pb,
+                pbv_local_digest[pbv_local_digest.size() - 2],
+                mp_N_pbv,
+                wrSoFar,
+                pb_localdigest,
+                POE_BITS,
+                MS_LIMBS,
+                mp_MSMOD);
             pmp4.generate_r1cs_constraints();
 
             // at this time, both pbv_local_digest[pbv_local_digest.size() - 2], wrSoFar should be good.
 
             pmp4.generate_r1cs_witness();
-                    
-            //accList->push_back(memDigest);
-            //prodList->push_back(currentProd);
-            
-            //memDigest = ipow(memDigest, batchVal);
+
+            // accList->push_back(memDigest);
+            // prodList->push_back(currentProd);
+
+            // memDigest = ipow(memDigest, batchVal);
 
             mpz_powm(memDigest.get_mpz_t(), memDigest.get_mpz_t(), batchVal.get_mpz_t(), mp_N);
-        
-            //TODOTODO
-            
-            //mpz_powm_ui(memDigest, memDigest, batchVal, mp_N);
+
+            // TODOTODO
+
+            // mpz_powm_ui(memDigest, memDigest, batchVal, mp_N);
 
             currentProd = currentProd * batchVal;
-            //mpz_mul_ui(currentProd, currentProd, batchVal);
+            // mpz_mul_ui(currentProd, currentProd, batchVal);
 
             // TODO: init values
 
-            //pb.val(pb_localdigest) = ipow(pb.val(prev_local_digest).as_ulong(), pb.val(wrSoFar).as_ulong()) % __LTM_N;
+            // pb.val(pb_localdigest) = ipow(pb.val(prev_local_digest).as_ulong(), pb.val(wrSoFar).as_ulong()) % __LTM_N;
 
-            //pb.val(pb_localdigest) = TO_FIELD(ipow_fp<EX_TYPE>(pb.val(prev_local_digest), pb.val(wrSoFar)));
-
+            // pb.val(pb_localdigest) = TO_FIELD(ipow_fp<EX_TYPE>(pb.val(prev_local_digest), pb.val(wrSoFar)));
 
             // already filled in pmp4 witness
-            pb.val(pb_localdigest) = TO_FIELD(memDigest);
+            // pb.val(pb_localdigest) = FieldT(memDigest);
+            get_fields_from_mpz(pb, memDigest.get_mpz_t(), pb_localdigest, MS_LIMBS, mp_MSMOD);
 
             total_inputs += 1; // aux_h2 and new local digest
 
@@ -1897,322 +2503,450 @@ void * proveHandWrittenThread(void * vpta)
             INC_INT_STATS(time_proverFinishBatch, get_sys_clock() - loopstart);
             // */
         }
-        
+
         lastTxnID = txnID;
 
-        
         pbv_val.push_back(pb_variable<FieldT>());
-        auto & pb_val = pbv_val.back();
+        auto &pb_val = pbv_val.back();
         pb_val.allocate(pb, "val");
 
         pbv_addr.push_back(pb_variable<FieldT>());
-        auto & pb_addr = pbv_addr.back();
+        auto &pb_addr = pbv_addr.back();
         pb_addr.allocate(pb, "addr");
 
-            pb.val(pb_val) = LARGE_DIV_INTRACTABLE_INT + val;
-            pb.val(pb_addr) = LARGE_DIV_INTRACTABLE_INT + v_addr;
+        pb.val(pb_val) = LARGE_DIV_INTRACTABLE_INT + val;
+        pb.val(pb_addr) = LARGE_DIV_INTRACTABLE_INT + v_addr;
 
-            total_inputs += 2;
-            
-            if (accessType == 0) // RD
+        total_inputs += 2;
+
+        if (accessType == 0) // RD
+        {
+            // note that in this part we do not compute H through circuit logic, but rely on the client
+            // to check the well-formedness of each multiplier to initReadList or readBatchList.
+            if (lwMap.find(v_addr) == lwMap.end())
             {
-                // note that in this part we do not compute H through circuit logic, but rely on the client
-                // to check the well-formedness of each multiplier to initReadList or readBatchList.
-                if (lwMap.find(v_addr) == lwMap.end())
+                pb.ADD_CONSTRAINT(pb_val, 1, LARGE_DIV_INTRACTABLE_INT + 0); // val == 0
+                if (pbv_initReadList.size() > 0)
                 {
-                    pb.ADD_CONSTRAINT(pb_val, 1, LARGE_DIV_INTRACTABLE_INT + 0); // val == 0
-                    if(pbv_initReadList.size() > 0)
-                    {
-                        //auto & pb_ir_prev = pbv_initReadList.back();
-                        pbv_initReadList.push_back(pb_variable<FieldT>());
-                        auto & pb_ir = pbv_initReadList.back();
-                        pb_ir.allocate(pb, "ir-item");
-                        pb.ADD_CONSTRAINT(pbv_initReadList[pbv_initReadList.size()-2], pb_addr, pb_ir); // accumulate H(addr).
-                        pb.val(pb_ir) = pb.val(pbv_initReadList[pbv_initReadList.size()-2]) * pb.val(pb_addr);
-                    }
-                    else
-                    {
-                        pbv_initReadList.push_back(pb_variable<FieldT>());
-                        auto & pb_ir = pbv_initReadList.back();
-                        pb_ir.allocate(pb, "ir-item");
-                        pb.ADD_CONSTRAINT(1, pb_addr, pb_ir); // accumulate this.
-                        pb.val(pb_ir) = pb.val(pb_addr);
-                    }
-                    total_inputs += 1;
-                    // hack: to make initReadBatchVal short enough
-                    // real implementation of PoKE is in future work.
-                    initReadBatchVal = initReadBatchVal * v_addr;
-                    //mpz_mul(initReadBatchVal, initReadBatchVal, v_addr);
+                    // auto & pb_ir_prev = pbv_initReadList.back();
+                    pbv_initReadList.push_back(pb_variable<FieldT>());
+                    auto &pb_ir = pbv_initReadList.back();
+                    pb_ir.allocate(pb, "ir-item");
+                    pb.ADD_CONSTRAINT(pbv_initReadList[pbv_initReadList.size() - 2], pb_addr, pb_ir); // accumulate H(addr).
+                    pb.val(pb_ir) = pb.val(pbv_initReadList[pbv_initReadList.size() - 2]) * pb.val(pb_addr);
                 }
                 else
                 {
-                    
-                    mpz_t Hval;
-                    mpz_init(Hval);
-                    H_mp(Hval, v_addr, val); // Hval = (I + v_addr) * (I + val) * (I + v_addr + val)
-                    if(pbv_readBatchList.size() > 0)
-                    {
-                        //auto & pb_rb_prev = pbv_readBatchList.back();
-                        //auto prev_ind = pb_rb_prev.index;
-                        pbv_readBatchList.push_back(pb_variable<FieldT>());
-                        auto & pb_rb = pbv_readBatchList.back();
-                        pb_rb.allocate(pb, "rb-item");
-                        
-                        auto hav = FieldT(Hval);
-                        pb.ADD_CONSTRAINT(pbv_readBatchList[pbv_readBatchList.size() - 2], hav, pb_rb); // accumulate this.
-                        //pb_rb_prev.index = prev_ind; // HACK
-                        pb.val(pb_rb) = pb.val(pbv_readBatchList[pbv_readBatchList.size() - 2]) * hav; // the computation of hash does not need to be in the constraint system as we assume that the verifier is capable of computing the hashes.
-                    }
-                    else
-                    {
-                        pbv_readBatchList.push_back(pb_variable<FieldT>());
-                        auto & pb_rb = pbv_readBatchList.back();
-                        pb_rb.allocate(pb, "rb-item");
-                        pb.ADD_CONSTRAINT(1, FieldT(Hval), pb_rb); // accumulate this.
-                        pb.val(pb_rb) = FieldT(Hval);
-                    }
-                    total_inputs += 1;
-                    //if(H(v_addr, val) != 0)
-                    {
-
-                        //readBatchVal = readBatchVal * Hval;
-
-                        mpz_mul(readBatchVal.get_mpz_t(), readBatchVal.get_mpz_t(), Hval);
-
-                        //mpz_mul(readBatchVal, readBatchVal, H(v_addr, val));
-                    }
+                    pbv_initReadList.push_back(pb_variable<FieldT>());
+                    auto &pb_ir = pbv_initReadList.back();
+                    pb_ir.allocate(pb, "ir-item");
+                    pb.ADD_CONSTRAINT(1, pb_addr, pb_ir); // accumulate this.
+                    pb.val(pb_ir) = pb.val(pb_addr);
                 }
-                //ri ++;
+                total_inputs += 1;
+                // hack: to make initReadBatchVal short enough
+                // real implementation of PoKE is in future work.
+                initReadBatchVal = initReadBatchVal * v_addr;
+                // mpz_mul(initReadBatchVal, initReadBatchVal, v_addr);
             }
-            else // WR
+            else
             {
-                
-                pb_variable<FieldT> aux_h2; // we need to encode H because the circuit needs to compute H correctly.
-                aux_h2.allocate(pb, "aux_h2");
-                pb_variable<FieldT> aux_h3;
-                aux_h3.allocate(pb, "aux_h3");
 
-                pb.ADD_CONSTRAINT(pb_addr, pb_val, aux_h3);
-                pb.val(aux_h3) = pb.val(pb_addr) * pb.val(pb_val);
-
-                pb.ADD_CONSTRAINT(aux_h3, pb_addr + pb_val - LARGE_DIV_INTRACTABLE_INT, aux_h2);
-                pb.val(aux_h2) = pb.val(aux_h3) * (v_addr + val + LARGE_DIV_INTRACTABLE_INT) ; //pb.val(pb_addr).as_ulong() * val * 2 % __LTM_N;
-
-                // NEW_EXTYPE(aux_h3val, v_addr + LARGE_DIV_INTRACTABLE_INT);
-                //mpz_mul(aux_h3val.get_mpz_t(), aux_h3val.get_mpz_t(), (val + LARGE_DIV_INTRACTABLE_INT).get_mpz_t());
-                // aux_h3val = aux_h3val * (val + LARGE_DIV_INTRACTABLE_INT);
-                
                 mpz_t Hval;
                 mpz_init(Hval);
                 H_mp(Hval, v_addr, val); // Hval = (I + v_addr) * (I + val) * (I + v_addr + val)
-                    
-                //NEW_EXTYPE(Hval, v_addr + LARGE_DIV_INTRACTABLE_INT);
-                //mpz_mul_ui(Hval.get_mpz_t(), Hval.get_mpz_t(), val + LARGE_DIV_INTRACTABLE_INT);
-                //mpz_mul_ui(Hval.get_mpz_t(), Hval.get_mpz_t(), v_addr + val + LARGE_DIV_INTRACTABLE_INT);
-                
-                if (pbv_wrList.size() > 0)
+                if (pbv_readBatchList.size() > 0)
                 {
-                    //auto & pb_wr_prev = pbv_wrList.back();
-                    pbv_wrList.push_back(pb_variable<FieldT>());
-                    auto & pb_wr = pbv_wrList.back();
-                    pb_wr.allocate(pb, "wr-item");
-                    pb.ADD_CONSTRAINT(pbv_wrList[pbv_wrList.size() - 2], aux_h2, pb_wr); // accumulate this.
-                    pb.val(pb_wr) = pb.val(pbv_wrList[pbv_wrList.size() - 2]) * pb.val(aux_h2);
+                    // auto & pb_rb_prev = pbv_readBatchList.back();
+                    // auto prev_ind = pb_rb_prev.index;
+                    pbv_readBatchList.push_back(pb_variable<FieldT>());
+                    auto &pb_rb = pbv_readBatchList.back();
+                    pb_rb.allocate(pb, "rb-item");
+
+                    auto hav = FieldT(Hval);
+                    pb.ADD_CONSTRAINT(pbv_readBatchList[pbv_readBatchList.size() - 2], hav, pb_rb); // accumulate this.
+                    // pb_rb_prev.index = prev_ind; // HACK
+                    pb.val(pb_rb) = pb.val(pbv_readBatchList[pbv_readBatchList.size() - 2]) * hav; // the computation of hash does not need to be in the constraint system as we assume that the verifier is capable of computing the hashes.
                 }
                 else
                 {
-                    pbv_wrList.push_back(pb_variable<FieldT>());
-                    auto & pb_wr = pbv_wrList.back();
-                    pb_wr.allocate(pb, "wr-item");
-                    pb.ADD_CONSTRAINT(1, aux_h2, pb_wr); // accumulate this.
-                    pb.val(pb_wr) = pb.val(aux_h2);
-                    
+                    pbv_readBatchList.push_back(pb_variable<FieldT>());
+                    auto &pb_rb = pbv_readBatchList.back();
+                    pb_rb.allocate(pb, "rb-item");
+                    pb.ADD_CONSTRAINT(1, FieldT(Hval), pb_rb); // accumulate this.
+                    pb.val(pb_rb) = FieldT(Hval);
                 }
+                total_inputs += 1;
+                // if(H(v_addr, val) != 0)
+                {
 
-                total_inputs += 2; // aux_h2 and aux_h3
+                    // readBatchVal = readBatchVal * Hval;
 
-                //batchVal = batchVal * Hval;
-                mpz_mul(batchVal.get_mpz_t(), batchVal.get_mpz_t(), Hval);
+                    mpz_mul(readBatchVal.get_mpz_t(), readBatchVal.get_mpz_t(), Hval);
 
-                lwMap[v_addr] = memCounter;
-                memCounter++;
-                //wi++;
-                
+                    // mpz_mul(readBatchVal, readBatchVal, H(v_addr, val));
+                }
             }
+            // ri ++;
+        }
+        else // WR
+        {
+
+            pb_variable<FieldT> aux_h2; // we need to encode H because the circuit needs to compute H correctly.
+            aux_h2.allocate(pb, "aux_h2");
+            pb_variable<FieldT> aux_h3;
+            aux_h3.allocate(pb, "aux_h3");
+
+            pb.ADD_CONSTRAINT(pb_addr, pb_val, aux_h3);
+            pb.val(aux_h3) = pb.val(pb_addr) * pb.val(pb_val);
+
+            pb.ADD_CONSTRAINT(aux_h3, pb_addr + pb_val - LARGE_DIV_INTRACTABLE_INT, aux_h2);
+            pb.val(aux_h2) = pb.val(aux_h3) * (v_addr + val + LARGE_DIV_INTRACTABLE_INT); // pb.val(pb_addr).as_ulong() * val * 2 % __LTM_N;
+
+            // NEW_EXTYPE(aux_h3val, v_addr + LARGE_DIV_INTRACTABLE_INT);
+            // mpz_mul(aux_h3val.get_mpz_t(), aux_h3val.get_mpz_t(), (val + LARGE_DIV_INTRACTABLE_INT).get_mpz_t());
+            // aux_h3val = aux_h3val * (val + LARGE_DIV_INTRACTABLE_INT);
+
+            mpz_t Hval;
+            mpz_init(Hval);
+            H_mp(Hval, v_addr, val); // Hval = (I + v_addr) * (I + val) * (I + v_addr + val)
+
+            // NEW_EXTYPE(Hval, v_addr + LARGE_DIV_INTRACTABLE_INT);
+            // mpz_mul_ui(Hval.get_mpz_t(), Hval.get_mpz_t(), val + LARGE_DIV_INTRACTABLE_INT);
+            // mpz_mul_ui(Hval.get_mpz_t(), Hval.get_mpz_t(), v_addr + val + LARGE_DIV_INTRACTABLE_INT);
+
+            if (pbv_wrList.size() > 0)
+            {
+                // auto & pb_wr_prev = pbv_wrList.back();
+                pbv_wrList.push_back(pb_variable<FieldT>());
+                auto &pb_wr = pbv_wrList.back();
+                pb_wr.allocate(pb, "wr-item");
+                pb.ADD_CONSTRAINT(pbv_wrList[pbv_wrList.size() - 2], aux_h2, pb_wr); // accumulate this.
+                pb.val(pb_wr) = pb.val(pbv_wrList[pbv_wrList.size() - 2]) * pb.val(aux_h2);
+            }
+            else
+            {
+                pbv_wrList.push_back(pb_variable<FieldT>());
+                auto &pb_wr = pbv_wrList.back();
+                pb_wr.allocate(pb, "wr-item");
+                pb.ADD_CONSTRAINT(1, aux_h2, pb_wr); // accumulate this.
+                pb.val(pb_wr) = pb.val(aux_h2);
+            }
+
+            total_inputs += 2; // aux_h2 and aux_h3
+
+            // batchVal = batchVal * Hval;
+            mpz_mul(batchVal.get_mpz_t(), batchVal.get_mpz_t(), Hval);
+
+            lwMap[v_addr] = memCounter;
+            memCounter++;
+            // wi++;
+        }
         INC_INT_STATS(time_proverProcessTxn, get_sys_clock() - loopstart);
-        
     }
 
     // after everything:
 
-    if(pbv_wrList.size() > 0)
+    if (pbv_wrList.size() > 0)
     {
-            if (pbv_initReadList.size() > 0)
+        if (pbv_initReadList.size() > 0)
+        {
+            pbv_A.push_back(pb_variable<FieldT>());
+            auto &pb_A = pbv_A.back();
+            pb_A.allocate(pb, "A");
+
+            pbv_B.push_back(pb_variable<FieldT>());
+            auto &pb_B = pbv_B.back();
+            pb_B.allocate(pb, "B");
+
+            vector<pb_variable<FieldT>> pb_A_Q(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_B_Q(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_A_Q_raised(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_B_Q_raised(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux1_POE(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux1_premod(2 * MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux1_q(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux2_POE(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux2_premod(2 * MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_aux2_q(MS_LIMBS);
+
+            pb_variable<FieldT> readlist_exp_pbv;
+            readlist_exp_pbv.allocate(pb, "readlist_exp_pbv");
+
+            total_inputs += 2;
+            // uint32_t A, B;
+            // xgcd(currentProd, initReadBatchVal, A, B);
+            NEW_EXTYPE(A, 0)
+            NEW_EXTYPE(B, 0)
+            NEW_EXTYPE(_g, 0)
+            mpz_gcdext(_g.get_mpz_t(), A.get_mpz_t(), B.get_mpz_t(), currentProd.get_mpz_t(), initReadBatchVal.get_mpz_t());
+
+            pb.val(pb_A) = TO_FIELD(A);
+            pb.val(pb_B) = TO_FIELD(B);
+
+            vector<pb_variable<FieldT>> aux1(MS_LIMBS), aux2(MS_LIMBS), aux3(MS_LIMBS), aux4(MS_LIMBS);
+
+            for (uint32_t idx = 0; idx < MS_LIMBS; idx++)
             {
-                    pbv_A.push_back(pb_variable<FieldT>());
-                    auto & pb_A = pbv_A.back();
-                    pb_A.allocate(pb, "A");
-
-                    pbv_B.push_back(pb_variable<FieldT>());
-                    auto & pb_B = pbv_B.back();
-                    pb_B.allocate(pb, "B");
-
-                    total_inputs += 2;
-                    //uint32_t A, B;
-                    //xgcd(currentProd, initReadBatchVal, A, B);
-                    NEW_EXTYPE(A, 0)
-                    NEW_EXTYPE(B, 0)
-                    NEW_EXTYPE(_g, 0)
-                    mpz_gcdext(_g.get_mpz_t(), A.get_mpz_t(), B.get_mpz_t(), currentProd.get_mpz_t(), initReadBatchVal.get_mpz_t());
-                    
-                    pb.val(pb_A) = TO_FIELD(A);
-                    pb.val(pb_B) = TO_FIELD(B);
-
-                    pb_variable<FieldT> aux1, aux2, aux3, aux4;
-
-                    aux1.allocate(pb, "aux1");
-                    aux2.allocate(pb, "aux2");
-                    aux3.allocate(pb, "aux3");
-                    aux4.allocate(pb, "aux4");
-
-                    pow_mod_p<FieldT> pmp(pb, pbv_local_digest.back(), pb_A, aux1, N_BITS);
-                    ///// pmp.generate_r1cs_constraints();
-                    
-                    pow_mod_p<FieldT> pmp2(pb, pbv_initReadList.back(), pb_B, aux2, N_BITS);
-                    ///// pmp2.generate_r1cs_constraints();
-                    
-                    // due to integer intractability assumption, the gcd might not be 1
-                    // in future version we will move to real primes.
-
-                    // pb.ADD_CONSTRAINT(aux1, aux2, aux3);
-                    mod_p<FieldT> g(pb, aux3, aux4, pb_G, N_BITS);
-                    ///// g.generate_r1cs_constraints();
-                    
-
-                    NEW_EXTYPE(mp_aux1, 0)
-                    NEW_EXTYPE(mp_aux2, 0)
-                    NEW_EXTYPE(mp_aux3, 0)
-                    NEW_EXTYPE(mp_aux4, 0)
-
-                    mpz_powm(mp_aux1.get_mpz_t(), memDigest.get_mpz_t(), A.get_mpz_t(), mp_N);
-                    mpz_powm(mp_aux2.get_mpz_t(), initReadBatchVal.get_mpz_t(), B.get_mpz_t(), mp_N);
-                    mpz_mul(mp_aux3.get_mpz_t(), mp_aux1.get_mpz_t(), mp_aux2.get_mpz_t());
-                    mpz_cdiv_q(mp_aux4.get_mpz_t(), mp_aux3.get_mpz_t(), mp_N);
-
-                    pb.val(aux1) = TO_FIELD(mp_aux1);
-                    pb.val(aux2) = TO_FIELD(mp_aux2);
-                    pb.val(aux3) = TO_FIELD(mp_aux3);
-                    pb.val(aux4) = TO_FIELD(mp_aux4);
-
-                    pmp.generate_r1cs_witness();
-                    pmp2.generate_r1cs_witness();
-                    g.generate_r1cs_witness();
-
-                    total_inputs += 4;
-                    
-                    pbv_initReadList.clear();
-                    initReadBatchVal = 1;
-                
-            }
-                
-            // normal read batch
-            if(pbv_readBatchList.size() > 0)
-            {
-                    pbv_acc1.push_back(pb_variable<FieldT>());
-                    auto & pb_acc1 = pbv_acc1.back();
-                    pb_acc1.allocate(pb, "acc1");
-
-                    pow_mod_p<FieldT> pmp3(pb, pb_acc1, pbv_readBatchList.back(), pbv_local_digest.back(), N_BITS);
-
-                    pmp3.generate_r1cs_constraints();
-                    
-
-                    total_inputs += 1;
-
-                    NEW_EXTYPE(quotient, 0)
-
-                    // quotient = currendProd // readBatchVal
-                    mpz_cdiv_q(quotient.get_mpz_t(), currentProd.get_mpz_t(), readBatchVal.get_mpz_t());
-                    NEW_EXTYPE(mp_acc1, 0)
-                    // mp_acc1 = g^quotient
-                    mpz_powm(mp_acc1.get_mpz_t(), mp_G, quotient.get_mpz_t(), mp_N);
-
-                    pb.val(pb_acc1) = TO_FIELD(mp_acc1);
-                    pmp3.generate_r1cs_witness();
-
-                    // hack: modify local digests right here because the digest are always updated per batch.
-
-                    pbv_local_digest.push_back(pb_variable<FieldT>());
-                    auto & pb_localdigest = pbv_local_digest.back();
-                    pb_localdigest.allocate(pb, "local-digest");
-
-                    pb.ADD_CONSTRAINT(pb_acc1, 1, pb_localdigest); // now latest local digest inside the circuit equals pi = g^(S/H)
-                    pb.val(pb_localdigest) = pb.val(pb_acc1);
-                    
-                    memDigest = mp_acc1; // update digest in plaintext
-                    currentProd = quotient; // S <- S / H.
-
-                    //pb.val(pb_acc1) = ipow(__LTM_G, quotient);
-                    readBatchVal = 1;
-                    pbv_readBatchList.clear();
+                aux1[idx].allocate(pb, "aux1");
+                aux2[idx].allocate(pb, "aux2");
+                aux3[idx].allocate(pb, "aux3");
+                aux4[idx].allocate(pb, "aux4");
+                pb_A_Q[idx].allocate(pb, "pb_A_Q");
+                pb_B_Q[idx].allocate(pb, "pb_B_Q");
+                pb_A_Q_raised[idx].allocate(pb, "pb_A_Q_raised");
+                pb_B_Q_raised[idx].allocate(pb, "pb_B_Q_raised");
+                pb_aux1_POE[idx].allocate(pb, "pb_aux1_POE");
+                pb_aux2_POE[idx].allocate(pb, "pb_aux2_POE");
+                pb_aux1_q[idx].allocate(pb, "pb_aux1_q");
+                pb_aux2_q[idx].allocate(pb, "pb_aux2_q");
             }
 
-            // deal with write
-            //auto & prev_local_digest = pbv_local_digest.back();
+            allocate_pb_multi_scalar(pb, pb_aux1_premod, 2 * MS_LIMBS, "pb_aux1_premod");
+            allocate_pb_multi_scalar(pb, pb_aux2_premod, 2 * MS_LIMBS, "pb_aux2_premod");
 
-            pbv_local_digest.push_back(pb_variable<FieldT>());
-            auto & pb_localdigest = pbv_local_digest.back();
-            pb_localdigest.allocate(pb, "local-digest");
+            // aux1 = pbv_local_digest.back() ^ pb_A
 
-            auto & wrSoFar = pbv_wrList.back();
-            
-            pow_mod_p<FieldT> pmp4(pb, pbv_local_digest[pbv_local_digest.size() - 2], wrSoFar, pb_localdigest, N_BITS);
-            
-            pmp4.generate_r1cs_constraints();
+            // simulate computation cost of server-side PoE preparation
+            prepare_POE(A.get_mpz_t());
+            prepare_POE(B.get_mpz_t());
+            // TODO: set values for pb_A_Q, pb_A_Q_raised, pb_aux1_POE, pb_B_Q, pb_B_Q_raised, pb_aux2_POE
 
-            // at this time, both pbv_local_digest[pbv_local_digest.size() - 2], wrSoFar should be good.
+            pow_mod_p_multi_scalar<FieldT> pmp(pb, pbv_local_digest.back(), mp_N_pbv, pb_A, pb_aux1_POE, POE_BITS, MS_LIMBS, mp_MSMOD);
+            pow_mod_p_multi_scalar<FieldT> pmp_POE_A(pb, pb_A_Q, mp_N_pbv, mp_L_pb, pb_A_Q_raised, POE_BITS, MS_LIMBS, mp_MSMOD);
+            mul_multi_scalar<FieldT> mul_POE_A(pb, pb_A_Q_raised, pb_aux1_POE, pb_aux1_premod, MS_LIMBS, mp_MSMOD);
+            mod_p_multi_scalar<FieldT> mul_mod_A(pb, pb_aux1_premod, mp_N_pbv, pb_aux1_q, aux1, POE_BITS, MS_LIMBS, mp_MSMOD);
+            pmp.generate_r1cs_constraints();
+            pmp_POE_A.generate_r1cs_constraints();
+            mul_POE_A.generate_r1cs_constraints();
+            mul_mod_A.generate_r1cs_constraints();
+            // aux2 = g^(pbv_initReadList.back() * pb_B)
 
-            pmp4.generate_r1cs_witness();
+            pb.ADD_CONSTRAINT(pbv_initReadList.back(), pb_B, readlist_exp_pbv);
 
-            // pmp4.debug(cout);
-                    
-            //accList->push_back(memDigest);
-            //prodList->push_back(currentProd);
-            
-            //memDigest = ipow(memDigest, batchVal);
+            pb.val(pbv_initReadList.back()).as_bigint().to_mpz(init_read_list_back);
+            mpz_mul(readlist_exponent, B.get_mpz_t(), init_read_list_back);
+            mpz_mod(readlist_exponent, readlist_exponent, mp_POE_L); // PoE hack
+            pb.val(readlist_exp_pbv) = FieldT(readlist_exponent);
+            pow_mod_p_multi_scalar<FieldT> pmp2(pb, pb_G, mp_N_pbv, readlist_exp_pbv, pb_aux2_POE, POE_BITS, MS_LIMBS, mp_MSMOD);
+            pow_mod_p_multi_scalar<FieldT> pmp_POE_B(pb, pb_B_Q, mp_N_pbv, mp_L_pb, pb_B_Q_raised, POE_BITS, MS_LIMBS, mp_MSMOD);
+            mul_multi_scalar<FieldT> mul_POE_B(pb, pb_B_Q_raised, pb_aux2_POE, pb_aux2_premod, MS_LIMBS, mp_MSMOD);
+            mod_p_multi_scalar<FieldT> mul_mod_B(pb, pb_aux2_premod, mp_N_pbv, pb_aux2_q, aux2, POE_BITS, MS_LIMBS, mp_MSMOD);
 
-            mpz_powm(memDigest.get_mpz_t(), memDigest.get_mpz_t(), batchVal.get_mpz_t(), mp_N);
-        
-            //TODOTODO
-            
-            //mpz_powm_ui(memDigest, memDigest, batchVal, mp_N);
+            pmp2.generate_r1cs_constraints();
+            pmp_POE_B.generate_r1cs_constraints();
+            mul_POE_B.generate_r1cs_constraints();
+            mul_mod_B.generate_r1cs_constraints();
 
-            currentProd = currentProd * batchVal;
-            //mpz_mul_ui(currentProd, currentProd, batchVal);
+            // due to integer intractability assumption, the gcd might not be 1
+            // in future version we will move to real primes.
 
-            // TODO: init values
+            // pb.ADD_CONSTRAINT(aux1, aux2, aux3);
+            mod_p_multi_scalar<FieldT> g(pb, aux3, mp_N_pbv, aux4, pb_G, POE_BITS, MS_LIMBS, mp_MSMOD);
 
-            //pb.val(pb_localdigest) = ipow(pb.val(prev_local_digest).as_ulong(), pb.val(wrSoFar).as_ulong()) % __LTM_N;
+            g.generate_r1cs_constraints();
 
-            //pb.val(pb_localdigest) = TO_FIELD(ipow_fp<EX_TYPE>(pb.val(prev_local_digest), pb.val(wrSoFar)));
+            NEW_EXTYPE(mp_aux1, 0)
+            NEW_EXTYPE(mp_aux2, 0)
+            NEW_EXTYPE(mp_aux3, 0)
+            NEW_EXTYPE(mp_aux4, 0)
 
+            mpz_powm(mp_aux1.get_mpz_t(), memDigest.get_mpz_t(), A.get_mpz_t(), mp_N);
+            mpz_powm(mp_aux2.get_mpz_t(), initReadBatchVal.get_mpz_t(), B.get_mpz_t(), mp_N);
+            mpz_mul(mp_aux3.get_mpz_t(), mp_aux1.get_mpz_t(), mp_aux2.get_mpz_t());
+            mpz_cdiv_q(mp_aux4.get_mpz_t(), mp_aux3.get_mpz_t(), mp_N);
 
-            // already filled in pmp4 witness
-            pb.val(pb_localdigest) = TO_FIELD(memDigest);
+            get_fields_from_mpz(pb, mp_aux1.get_mpz_t(), aux1, MS_LIMBS, mp_MSMOD);
+            get_fields_from_mpz(pb, mp_aux2.get_mpz_t(), aux2, MS_LIMBS, mp_MSMOD);
+            get_fields_from_mpz(pb, mp_aux3.get_mpz_t(), aux3, MS_LIMBS, mp_MSMOD);
+            get_fields_from_mpz(pb, mp_aux4.get_mpz_t(), aux4, MS_LIMBS, mp_MSMOD);
 
-            total_inputs += 1; // aux_h2 and new local digest
+            pmp.generate_r1cs_witness();
+            pmp_POE_A.generate_r1cs_witness();
+            mul_POE_A.generate_r1cs_witness();
+            mul_mod_A.generate_r1cs_witness();
 
-            // erase pbv_wrList
-            pbv_wrList.clear();
-            batchVal = 1;
-            // */
+            pmp2.generate_r1cs_witness();
+            pmp_POE_B.generate_r1cs_witness();
+            mul_POE_B.generate_r1cs_witness();
+            mul_mod_B.generate_r1cs_witness();
+
+            g.generate_r1cs_witness();
+
+            total_inputs += 4;
+
+            pbv_initReadList.clear();
+            initReadBatchVal = 1;
+        }
+
+        // normal read batch
+        if (pbv_readBatchList.size() > 0)
+        {
+            pbv_acc1.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+            auto &pb_acc1 = pbv_acc1.back();
+            allocate_pb_multi_scalar(pb, pb_acc1, MS_LIMBS, "acc1");
+
+            // acc1^pbv_readBatchList = pbv_localdigest
+            vector<pb_variable<FieldT>> pb_rbl_Q(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_rbl_Q_raised(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_localDigest_POE(MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_localDigest_premod(2 * MS_LIMBS);
+            vector<pb_variable<FieldT>> pb_localDigest_q(MS_LIMBS);
+
+            allocate_pb_multi_scalar(pb, pb_rbl_Q, MS_LIMBS, "pb_rbl_Q");
+            allocate_pb_multi_scalar(pb, pb_rbl_Q_raised, MS_LIMBS, "pb_rbl_Q_raised");
+            allocate_pb_multi_scalar(pb, pb_localDigest_POE, MS_LIMBS, "pb_localDigest_POE");
+            allocate_pb_multi_scalar(pb, pb_localDigest_premod, MS_LIMBS, "pb_localDigest_premod");
+            allocate_pb_multi_scalar(pb, pb_localDigest_q, MS_LIMBS, "pb_localDigest_q");
+
+            pow_mod_p_multi_scalar<FieldT> pmp_rbl(
+                pb,
+                pb_rbl_Q,
+                mp_N_pbv,
+                mp_L_pb,
+                pb_rbl_Q_raised,
+                POE_BITS,
+                MS_LIMBS,
+                mp_MSMOD);
+
+            pow_mod_p_multi_scalar<FieldT> pmp3(
+                pb,
+                pb_acc1,
+                mp_N_pbv,
+                pbv_readBatchList.back(),
+                pb_localDigest_POE,
+                POE_BITS,
+                MS_LIMBS,
+                mp_MSMOD);
+
+            mul_multi_scalar<FieldT> mul_POE_rbl(
+                pb,
+                pb_rbl_Q_raised,
+                pb_localDigest_POE,
+                pb_localDigest_premod,
+                MS_LIMBS,
+                mp_MSMOD);
+
+            mod_p_multi_scalar<FieldT> mul_mod_rbl(
+                pb,
+                pb_localDigest_premod,
+                mp_N_pbv,
+                pb_localDigest_q,
+                pbv_local_digest.back(),
+                POE_BITS,
+                MS_LIMBS,
+                mp_MSMOD);
+
+            pmp3.generate_r1cs_constraints();
+            pmp_rbl.generate_r1cs_constraints();
+            mul_POE_rbl.generate_r1cs_constraints();
+            mul_mod_rbl.generate_r1cs_constraints();
+
+            total_inputs += 1;
+
+            NEW_EXTYPE(quotient, 0)
+
+            // quotient = currendProd // readBatchVal
+            mpz_cdiv_q(quotient.get_mpz_t(), currentProd.get_mpz_t(), readBatchVal.get_mpz_t());
+            NEW_EXTYPE(mp_acc1, 0)
+            // simulate POE cost
+            prepare_POE(quotient.get_mpz_t());
+            // mp_acc1 = g^quotient
+            mpz_powm(mp_acc1.get_mpz_t(), mp_G, quotient.get_mpz_t(), mp_N);
+
+            get_fields_from_mpz(pb, mp_acc1.get_mpz_t(), pb_acc1, MS_LIMBS, mp_MSMOD);
+            // pb.val(pb_acc1) = TO_FIELD(mp_acc1);
+
+            pmp3.generate_r1cs_witness();
+            pmp_rbl.generate_r1cs_witness();
+            mul_POE_rbl.generate_r1cs_witness();
+            mul_mod_rbl.generate_r1cs_witness();
+
+            // hack: modify local digests right here because the digest are always updated per batch.
+
+            pbv_local_digest.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+            auto &pb_localdigest = pbv_local_digest.back();
+            allocate_pb_multi_scalar(pb, pb_localdigest, MS_LIMBS, "local-digest");
+            // pb_localdigest.allocate(pb, "local-digest");
+
+            eq_constraint_multi_scalar(pb, pb_acc1, pb_localdigest, MS_LIMBS);
+            // pb.ADD_CONSTRAINT(pb_acc1, 1, pb_localdigest); // now latest local digest inside the circuit equals pi = g^(S/H)
+            assign_multi_scalar(pb, pb_localdigest, pb_acc1, MS_LIMBS);
+            // pb.val(pb_localdigest) = pb.val(pb_acc1);
+
+            memDigest = mp_acc1;    // update digest in plaintext
+            currentProd = quotient; // S <- S / H.
+
+            // pb.val(pb_acc1) = ipow(__LTM_G, quotient);
+            readBatchVal = 1;
+            pbv_readBatchList.clear();
+        }
+
+        // deal with write
+        // auto & prev_local_digest = pbv_local_digest.back();
+
+        pbv_local_digest.push_back(vector<pb_variable<FieldT>>(MS_LIMBS));
+        auto &pb_localdigest = pbv_local_digest.back();
+        allocate_pb_multi_scalar(pb, pb_localdigest, MS_LIMBS, "local-digest");
+        // pb_localdigest.allocate(pb, "local-digest");
+
+        auto &wrSoFar = pbv_wrList.back();
+
+        pow_mod_p_multi_scalar<FieldT> pmp4(
+            pb,
+            pbv_local_digest[pbv_local_digest.size() - 2],
+            mp_N_pbv,
+            wrSoFar,
+            pb_localdigest,
+            POE_BITS,
+            MS_LIMBS,
+            mp_MSMOD);
+
+        pmp4.generate_r1cs_constraints();
+
+        // at this time, both pbv_local_digest[pbv_local_digest.size() - 2], wrSoFar should be good.
+
+        pmp4.generate_r1cs_witness();
+
+        // pmp4.debug(cout);
+
+        // accList->push_back(memDigest);
+        // prodList->push_back(currentProd);
+
+        // memDigest = ipow(memDigest, batchVal);
+
+        mpz_powm(memDigest.get_mpz_t(), memDigest.get_mpz_t(), batchVal.get_mpz_t(), mp_N);
+
+        // TODOTODO
+
+        // mpz_powm_ui(memDigest, memDigest, batchVal, mp_N);
+
+        currentProd = currentProd * batchVal;
+        // mpz_mul_ui(currentProd, currentProd, batchVal);
+
+        // TODO: init values
+
+        // pb.val(pb_localdigest) = ipow(pb.val(prev_local_digest).as_ulong(), pb.val(wrSoFar).as_ulong()) % __LTM_N;
+
+        // pb.val(pb_localdigest) = TO_FIELD(ipow_fp<EX_TYPE>(pb.val(prev_local_digest), pb.val(wrSoFar)));
+
+        // already filled in pmp4 witness
+        get_fields_from_mpz(pb, memDigest.get_mpz_t(), pb_localdigest, MS_LIMBS, mp_MSMOD);
+        // pb.val(pb_localdigest) = TO_FIELD(memDigest);
+
+        total_inputs += 1; // aux_h2 and new local digest
+
+        // erase pbv_wrList
+        pbv_wrList.clear();
+        batchVal = 1;
+        // */
     }
 
 #else // Merkle Tree
 
     cout << "Generating Constraints..." << endl;
-    
-    for(uint32_t ind = 0; ind < opLength; ind ++ )
+
+    for (uint32_t ind = 0; ind < opLength; ind++)
     {
         uint64_t loopstart = get_sys_clock();
 
@@ -2228,33 +2962,34 @@ void * proveHandWrittenThread(void * vpta)
             uint32_t addr = v_addr;
             libff::bit_vector leaf, address_bits(tree_depth);
 
-            leaf = levels[tree_depth-1][addr];
+            leaf = levels[tree_depth - 1][addr];
 
-            for (int i = 0; i < tree_depth; i++) {
+            for (int i = 0; i < tree_depth; i++)
+            {
                 uint32_t tmp = (addr & 0x01);
                 address_bits[i] = tmp;
                 addr = addr / 2;
                 // std::cout << address_bits[tree_depth-1-i] << std::endl;
             }
 
-            //Fill in the path
+            // Fill in the path
             size_t index = v_addr;
-            for (int i = tree_depth - 1; i >= 0; i--) {
-                path[i] = address_bits[tree_depth-1-i] == 0 ? levels[i][index+1] : levels[i][index-1];
+            for (int i = tree_depth - 1; i >= 0; i--)
+            {
+                path[i] = address_bits[tree_depth - 1 - i] == 0 ? levels[i][index + 1] : levels[i][index - 1];
                 index = index / 2;
             }
 
             sample::MerkleCircuit<FieldT, HashT> mc(pb, tree_depth);
             mc.generate_r1cs_constraints();
             mc.generate_r1cs_witness(pb, leaf, root, path, addr, address_bits);
-
         }
         else
         {
-            // update the merkle tree           
+            // update the merkle tree
 
             std::vector<merkle_authentication_node> prev_path(tree_depth);
-            libff::bit_vector prev_load_hash = levels[tree_depth-1][v_addr];
+            libff::bit_vector prev_load_hash = levels[tree_depth - 1][v_addr];
             libff::bit_vector prev_store_hash = hash256<HashT>(to_string(lwMap[v_addr] * 2));
 
             libff::bit_vector loaded_leaf = prev_load_hash;
@@ -2263,7 +2998,8 @@ void * proveHandWrittenThread(void * vpta)
             libff::bit_vector address_bits(tree_depth);
 
             uint32_t addr = v_addr;
-            for (int i = 0; i < tree_depth; i++) {
+            for (int i = 0; i < tree_depth; i++)
+            {
                 uint32_t tmp = (addr & 0x01);
                 address_bits[i] = tmp;
                 addr = addr / 2;
@@ -2272,9 +3008,10 @@ void * proveHandWrittenThread(void * vpta)
 
             uint32_t index = v_addr;
 
-            for (int i = tree_depth - 1; i >= 0; i--) {
-                bool computed_is_right = address_bits[tree_depth-1-i] == 0;
-                libff::bit_vector other = computed_is_right ? levels[i][index+1] : levels[i][index-1];
+            for (int i = tree_depth - 1; i >= 0; i--)
+            {
+                bool computed_is_right = address_bits[tree_depth - 1 - i] == 0;
+                libff::bit_vector other = computed_is_right ? levels[i][index + 1] : levels[i][index - 1];
 
                 prev_path[i] = other;
 
@@ -2306,17 +3043,15 @@ void * proveHandWrittenThread(void * vpta)
 
             digest_variable<FieldT> next_root_digest(pb, digest_len, "next_root_digest");
 
-            
-
             merkle_authentication_path_variable<FieldT, HashT> next_path_var(pb, tree_depth, "next_path_var");
             merkle_tree_check_update_gadget<FieldT, HashT> mls(pb, tree_depth, address_bits_va,
-                                                            prev_leaf_digest, prev_root_digest, prev_path_var,
-                                                            next_leaf_digest, next_root_digest, next_path_var, ONE, "mls");
+                                                               prev_leaf_digest, prev_root_digest, prev_path_var,
+                                                               next_leaf_digest, next_root_digest, next_path_var, ONE, "mls");
             prev_path_var.generate_r1cs_constraints();
             mls.generate_r1cs_constraints();
 
             address_bits_va.fill_with_bits(pb, address_bits);
-            //assert(address_bits_va.get_field_element_from_bits(pb).as_ulong() == address);
+            // assert(address_bits_va.get_field_element_from_bits(pb).as_ulong() == address);
             prev_leaf_digest.generate_r1cs_witness(loaded_leaf);
             prev_path_var.generate_r1cs_witness(addr, prev_path);
             next_leaf_digest.generate_r1cs_witness(stored_leaf);
@@ -2328,7 +3063,7 @@ void * proveHandWrittenThread(void * vpta)
             prev_root_digest.generate_r1cs_witness(load_root);
             next_root_digest.generate_r1cs_witness(store_root);
 
-            for (size_t i=0; i< digest_len; i++)
+            for (size_t i = 0; i < digest_len; i++)
             {
                 // chain
                 pb.ADD_CONSTRAINT(prev_root_digest.bits[i], 1, pbv_roots.back().bits[i]);
@@ -2349,9 +3084,9 @@ void * proveHandWrittenThread(void * vpta)
     //_mm_free(accList);
     //_mm_free(prodList);
     //_mm_free(latestWrittenIndex);
-    
+
     pb.set_input_sizes(total_inputs); // TODO: change this
-    
+
     const r1cs_constraint_system<FieldT> constraint_system = pb.get_constraint_system();
 
     uint64_t tt3 = get_sys_clock();
@@ -2359,7 +3094,7 @@ void * proveHandWrittenThread(void * vpta)
 
     r1cs_ppzksnark_keypair<default_r1cs_ppzksnark_pp> keypair = r1cs_ppzksnark_generator<default_r1cs_ppzksnark_pp>(constraint_system);
 
-    INC_INT_STATS(int_comm_cost, (keypair.pk.size_in_bits() + keypair.vk.size_in_bits())/8);
+    INC_INT_STATS(int_comm_cost, (keypair.pk.size_in_bits() + keypair.vk.size_in_bits()) / 8);
 
     uint64_t tt4 = get_sys_clock();
     INC_INT_STATS(time_generateKey, tt4 - tt3);
@@ -2379,7 +3114,7 @@ void * proveHandWrittenThread(void * vpta)
     INC_INT_STATS(time_verify, tt6 - tt5);
 
     std::ofstream proof_file("verification/proofs/litmus-proof" + to_string(pta->id));
-    proof_file << proof; 
+    proof_file << proof;
 
     INC_INT_STATS(int_comm_cost, proof_file.tellp());
 
@@ -2430,11 +3165,11 @@ void proveAll()
             {
                 // frontend
                 cout << "Source code Length in C++: " << strlen(cCode) << endl;
-                #if OUTPUT_SOURCE
+#if OUTPUT_SOURCE
                 ofstream fout("code.c");
                 fout << cCode << endl;
                 fout.close();
-                #endif
+#endif
                 auto arg = (*env)->NewStringUTF(cCode);
                 /*auto stringClass = (*env)->FindClass("java/lang/String");
                 auto args = (*env)->NewObjectArray(3, stringClass, NULL);
@@ -2530,7 +3265,7 @@ void proveAll()
                     
                     std::cout << "Creating proving/verification keys, will write to " << verification_key_fn
                             << ", " << proving_key_fn << std::endl;
-                    
+
 #if !SKIP_KEY_GEN
                     
                     run_setup(p.n_constraints, p.n_inputs, p.n_outputs, p.n_vars, prime, verification_key_fn, proving_key_fn, unprocessed_vkey_fn, mA, mB, mC, vkStr, pkStr);
@@ -2600,7 +3335,7 @@ void proveAll()
                     ifstream pkF(proving_key_fn);
                     pkF >> keypair.pk;
                     pkF.close();
-                    
+
 #else
                     pkStr >> keypair.pk;
 #endif
@@ -2646,7 +3381,6 @@ void proveAll()
     }
     //*/
 #endif
-
 }
 
 #endif

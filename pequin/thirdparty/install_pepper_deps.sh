@@ -57,10 +57,8 @@ cd $UP
 
 #libsnark
 echo "installing libsnark"
-# [ ! -d libsnark ] && git clone https://github.com/scipr-lab/libsnark.git
-# cp libsnark_compilerflag.patch libsnark
-# apply patches
-$TAR libsnark.tar.gz
+[ ! -d libsnark ] && git clone https://github.com/scipr-lab/libsnark.git
+cp libsnark_compilerflag.patch libsnark
 cd libsnark
 # git checkout dc78fdae02b437bb6c838a82f9261c49bbd7723e
 # git submodule init && git submodule update
